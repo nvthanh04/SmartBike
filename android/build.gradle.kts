@@ -1,7 +1,18 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // Chìa khóa để chạy Google Services (Firebase)
+        classpath("com.google.gms:google-services:4.4.1")
+    }
+}
+
 allprojects {
     repositories {
         google()
-        mainCentral()
+        mavenCentral()
     }
 }
 
@@ -15,14 +26,13 @@ subprojects {
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 
-// KHỐI QUAN TRỌNG: Sửa lỗi compileSdkVersion cho geolocator và Java 11/17
 subprojects {
     afterEvaluate {
         if (project.extensions.findByName("android") != null) {
             configure<com.android.build.gradle.BaseExtension> {
-                // Ép các plugin sử dụng SDK 34 hoặc 35
-                compileSdkVersion(34) 
-                buildToolsVersion("34.0.0")
+                // Sửa thành 36
+                compileSdkVersion(36) 
+                buildToolsVersion("36.0.0")
 
                 compileOptions {
                     sourceCompatibility = JavaVersion.VERSION_17
