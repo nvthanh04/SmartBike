@@ -1,37 +1,25 @@
-import 'dart:async';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
-import 'invoice_screen.dart';
-import '../../models/station_model.dart';
-import '../../services/location_service.dart';
-import '../../services/routing_service.dart';
-import '../../services/station_service.dart';
-import '../../widgets/location_indicator.dart';
-import '../../widgets/station_marker_icon.dart';
+import '../models/station_model.dart';
+import '../services/location_service.dart';
+import '../services/routing_service.dart';
+import '../services/station_service.dart';
+import '../widgets/location_indicator.dart';
+import '../widgets/station_marker_icon.dart';
 
-class ActiveTripScreen extends StatefulWidget {
-  final String bikeId;
-
-  const ActiveTripScreen({super.key, required this.bikeId});
+class MapScreen extends StatefulWidget {
+  const MapScreen({super.key});
 
   @override
-  State<ActiveTripScreen> createState() => _ActiveTripScreenState();
+  State<MapScreen> createState() => _MapScreenState();
 }
 
-class _ActiveTripScreenState extends State<ActiveTripScreen> {
-  // === TRẠNG THÁI CHUYẾN ĐI ===
-  int _secondsElapsed = 0;
-  Timer? _timer;
-  bool _isMonthlyTicket = false;
-
+class _MapScreenState extends State<MapScreen> {
   // === Vị trí ===
-  LatLng? currentLocation = const LatLng(21.028511, 105.804817); // Mặc định ở Hà Nội để load bản đồ trong 0s
+  LatLng? currentLocation;
   double _heading = 0;
   final MapController _mapController = MapController();
   final LocationService _locationService = LocationService();
@@ -56,74 +44,15 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   @override
   void initState() {
     super.initState();
-    _checkUserStatus();
-    _startTimer();
     _initLocationTracking();
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _locationService.dispose();
     _mapController.dispose();
     _searchController.dispose();
     super.dispose();
-  }
-
-  // =============================================
-  // LOGIC CHUYẾN ĐI
-  // =============================================
-
-  Future<void> _checkUserStatus() async {
-    String userId = FirebaseAuth.instance.currentUser?.uid ?? "";
-    try {
-      var userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
-      if (userDoc.exists) {
-        setState(() {
-          _isMonthlyTicket = userDoc.data()?['isMonthlyTicket'] ?? false;
-        });
-      }
-    } catch (e) {
-      debugPrint("Lỗi lấy dữ liệu người dùng: $e");
-    }
-  }
-
-  void _startTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {
-          _secondsElapsed++;
-        });
-      }
-    });
-  }
-
-  String _formatTime(int seconds) {
-    int minutes = seconds ~/ 60;
-    int remainingSeconds = seconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${remainingSeconds.toString().padLeft(2, '0')}';
-  }
-
-  int _calculateCost() {
-    int totalMinutes = (_secondsElapsed / 60).ceil();
-    int finalAmount = 0;
-
-    if (_isMonthlyTicket) {
-      if (totalMinutes <= 60) {
-        finalAmount = 0;
-      } else {
-        int extraTime = totalMinutes - 60;
-        finalAmount = (extraTime / 10).ceil() * 3000;
-      }
-    } else {
-      if (totalMinutes <= 60) {
-        finalAmount = 10000;
-      } else {
-        int extraTime = totalMinutes - 60;
-        finalAmount = 10000 + (extraTime / 10).ceil() * 3000;
-      }
-    }
-    return finalAmount;
   }
 
   // =============================================
@@ -132,34 +61,38 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
   Future<void> _initLocationTracking() async {
     try {
-      // 1. Không block UI, bản đồ đã được render ngay lập tức với vị trí mặc định (Hà Nội)
-      
-      // Chạy lấy quyền bất đồng bộ (nếu người dùng chưa cấp quyền, bảng hỏi sẽ hiện lên nhưng không làm treo bản đồ)
       await _locationService.checkPermission();
 
-      // 2. Thử lấy vị trí lưu trữ gần nhất (rất nhanh, áp dụng cho Mobile)
+      // 1. Sử dụng vị trí lưu trữ gần nhất để load bản đồ ngay lập tức
       final lastKnown = await _locationService.getLastKnownLocation();
-      if (lastKnown != null && mounted) {
-        setState(() {
-          currentLocation = lastKnown.position;
-          _heading = lastKnown.heading;
-        });
-        _mapController.move(lastKnown.position, 16.0);
+      if (lastKnown != null) {
+        if (mounted) {
+          setState(() {
+            currentLocation = lastKnown.position;
+            _heading = lastKnown.heading;
+          });
+        }
+      } else {
+        // 2. Nếu không có (ví dụ trên Web), thử lấy vị trí bằng mạng/IP (rất nhanh)
+        final fastLocation = await _locationService.getFastLocation();
+        if (fastLocation != null) {
+          if (mounted) {
+            setState(() {
+              currentLocation = fastLocation.position;
+              _heading = fastLocation.heading;
+            });
+          }
+        } else {
+          // 3. Fallback tạm thời ở trung tâm Hà Nội để không bị kẹt ở màn hình loading
+          if (mounted) {
+            setState(() {
+              currentLocation = const LatLng(21.028511, 105.804817);
+            });
+          }
+        }
       }
 
-      // 3. Ép lấy vị trí hiện tại cực nhanh (mức low accuracy) giới hạn trong 1.5 giây
-      // Điều này giải quyết vấn đề Web bị chậm > 1 phút
-      _locationService.getFastLocation().then((fastLocation) {
-        if (fastLocation != null && mounted) {
-          setState(() {
-            currentLocation = fastLocation.position;
-            _heading = fastLocation.heading;
-          });
-          _mapController.move(fastLocation.position, 16.0);
-        }
-      });
-
-      // 4. Lắng nghe GPS liên tục ở chế độ nền để tự động sửa lại vị trí khi GPS bắt nét (high accuracy)
+      // Lắng nghe GPS liên tục để cập nhật vị trí chính xác nhất (có thể mất thời gian để bắt được tín hiệu)
       _locationService.startPositionStream(
         onLocationChanged: (locationData) {
           if (mounted) {
@@ -172,14 +105,18 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           }
         },
         onError: (error) {
-          // Bỏ qua lỗi ngầm để không làm phiền người dùng
+          if (mounted) {
+            setState(() {
+              _errorMessage = error.toString();
+            });
+          }
         },
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Chưa thể lấy vị trí: $e')),
-        );
+        setState(() {
+          _errorMessage = e.toString();
+        });
       }
     }
   }
@@ -188,6 +125,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   // KIỂM TRA ĐI LỆCH ĐƯỜNG + TỰ ĐỘNG TÌM LẠI
   // =============================================
 
+  /// Kiểm tra nếu người dùng đi lệch đường → tự động tìm đường lại
   void _checkOffRoute(LatLng currentPos) {
     if (_routeResult == null || _destination == null || _isRerouting) return;
 
@@ -201,6 +139,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     }
   }
 
+  /// Tìm đường lại từ vị trí hiện tại đến đích
   Future<void> _reroute(LatLng fromPos) async {
     if (_destination == null || _isRerouting) return;
 
@@ -283,7 +222,8 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
         _isLoadingRoute = false;
       });
 
-      _fitRouteBounds(route.shortestRoute.points);
+      // Zoom bao quát toàn bộ đường đi
+      // _fitRouteBounds(route.shortestRoute.points);
 
       // final altCount = route.allRoutes.length - 1;
       // _showSnackBar(
@@ -348,7 +288,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
         content: Text(message),
         duration: const Duration(seconds: 3),
         behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.only(bottom: 240, left: 16, right: 16),
+        margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
       ),
     );
   }
@@ -371,6 +311,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Thanh kéo
               Container(
                 width: 40,
                 height: 4,
@@ -380,6 +321,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
+              // Icon trạm
               Container(
                 width: 56,
                 height: 56,
@@ -403,6 +345,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+              // Tên trạm
               Text(
                 station.name,
                 style: const TextStyle(
@@ -413,6 +356,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
+              // Địa chỉ
               if (station.address.isNotEmpty)
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -436,6 +380,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   ],
                 ),
               const SizedBox(height: 20),
+              // Thông tin xe
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -451,14 +396,22 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                       label: 'Xe có sẵn',
                       color: const Color(0xFF4CAF50),
                     ),
-                    Container(width: 1, height: 40, color: Colors.grey[300]),
+                    Container(
+                      width: 1,
+                      height: 40,
+                      color: Colors.grey[300],
+                    ),
                     _buildInfoItem(
                       icon: Icons.local_parking,
                       value: '${station.capacity - station.currentBikes}',
                       label: 'Chỗ trống',
                       color: const Color(0xFF2196F3),
                     ),
-                    Container(width: 1, height: 40, color: Colors.grey[300]),
+                    Container(
+                      width: 1,
+                      height: 40,
+                      color: Colors.grey[300],
+                    ),
                     _buildInfoItem(
                       icon: Icons.ev_station,
                       value: '${station.capacity}',
@@ -469,11 +422,13 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 ),
               ),
               const SizedBox(height: 20),
+              // Nút chỉ đường
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Navigator.pop(context);
+                    // Tìm đường đến trạm
                     _getRoute(SearchResult(
                       displayName: station.name,
                       location: LatLng(station.latitude, station.longitude),
@@ -505,6 +460,95 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
+  Widget _buildInfoItem({
+    required IconData icon,
+    required String value,
+    required String label,
+    required Color color,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, color: color, size: 24),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            color: Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // =============================================
+  // BUILD POLYLINES (đường xanh đậm + xanh nhạt)
+  // =============================================
+
+  List<Polyline> _buildPolylines() {
+    if (_routeResult == null) return [];
+
+    final polylines = <Polyline>[];
+
+    // 1. Vẽ các tuyến PHỤ (xanh nhạt)
+    for (final route in _routeResult!.allRoutes) {
+      if (!route.isShortest) {
+        // Viền tuyến phụ (tùy chọn, để đậm hơn chút)
+        polylines.add(Polyline(
+          points: route.points,
+          strokeWidth: 6,
+          color: const Color(0xFF6B9CE8), // Xanh viền nhạt
+        ));
+        // Lõi tuyến phụ
+        polylines.add(Polyline(
+          points: route.points,
+          strokeWidth: 4,
+          color: const Color(0xFF8AB4F8), // Xanh nhạt sáng
+        ));
+      }
+    }
+
+    // 2. Vẽ tuyến CHÍNH (xanh đậm có viền)
+    // - Lớp viền ở dưới (rộng hơn)
+    polylines.add(Polyline(
+      points: _routeResult!.shortestRoute.points,
+      strokeWidth: 8,
+      color: const Color(0xFF1967D2), // Viền xanh đậm chìm
+    ));
+    // - Lớp lõi ở trên
+    polylines.add(Polyline(
+      points: _routeResult!.shortestRoute.points,
+      strokeWidth: 5,
+      color: const Color(0xFF4285F4), // Lõi màu Google Blue
+    ));
+
+    // 3. Vẽ đoạn nối nét đứt vào tận ngõ/nhà
+    if (_destination != null && _routeResult!.shortestRoute.points.isNotEmpty) {
+      final lastRoutePoint = _routeResult!.shortestRoute.points.last;
+      const distance = Distance();
+      // Nếu cách hơn 5 mét thì vẽ đường đứt nét
+      if (distance.as(LengthUnit.Meter, lastRoutePoint, _destination!) > 5) {
+        polylines.add(Polyline(
+          points: [lastRoutePoint, _destination!],
+          strokeWidth: 4,
+          color: const Color(0xFF8AB4F8), // Xanh nhạt giống tuyến phụ
+          isDotted: true, // Nét đứt
+        ));
+      }
+    }
+
+    return polylines;
+  }
+
   // =============================================
   // BOTTOM SHEET DANH SÁCH TRẠM
   // =============================================
@@ -528,6 +572,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               padding: const EdgeInsets.only(top: 12),
               child: Column(
                 children: [
+                  // Thanh kéo
                   Container(
                     width: 40,
                     height: 4,
@@ -614,11 +659,11 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                                           ),
                                         ),
                                         const SizedBox(width: 16.0),
-                                        const Icon(
-                                          Icons.location_on,
-                                          color: Colors.redAccent,
-                                          size: 32.0,
-                                        ),
+                                        Icon(
+                                        Icons.location_on,
+                                        color: Colors.redAccent,
+                                        size: 32.0,
+                                      ),
                                       ],
                                     ),
                                   ),
@@ -636,273 +681,6 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           },
         );
       },
-    );
-  }
-
-  Widget _buildInfoItem({
-    required IconData icon,
-    required String value,
-    required String label,
-    required Color color,
-  }) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: color, size: 24),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            color: Colors.grey,
-          ),
-        ),
-      ],
-    );
-  }
-
-  List<Polyline> _buildPolylines() {
-    if (_routeResult == null) return [];
-
-    final polylines = <Polyline>[];
-
-    for (final route in _routeResult!.allRoutes) {
-      if (!route.isShortest) {
-        polylines.add(Polyline(
-          points: route.points,
-          strokeWidth: 6,
-          color: const Color(0xFF6B9CE8),
-        ));
-        polylines.add(Polyline(
-          points: route.points,
-          strokeWidth: 4,
-          color: const Color(0xFF8AB4F8),
-        ));
-      }
-    }
-
-    polylines.add(Polyline(
-      points: _routeResult!.shortestRoute.points,
-      strokeWidth: 8,
-      color: const Color(0xFF1967D2),
-    ));
-    polylines.add(Polyline(
-      points: _routeResult!.shortestRoute.points,
-      strokeWidth: 5,
-      color: const Color(0xFF4285F4),
-    ));
-
-    if (_destination != null && _routeResult!.shortestRoute.points.isNotEmpty) {
-      final lastRoutePoint = _routeResult!.shortestRoute.points.last;
-      const distance = Distance();
-      if (distance.as(LengthUnit.Meter, lastRoutePoint, _destination!) > 5) {
-        polylines.add(Polyline(
-          points: [lastRoutePoint, _destination!],
-          strokeWidth: 4,
-          color: const Color(0xFF8AB4F8),
-          isDotted: true,
-        ));
-      }
-    }
-
-    return polylines;
-  }
-
-  // =============================================
-  // RETURN BIKE LOGIC
-  // =============================================
-
-  Future<void> _checkAndReturnBike(BuildContext context) async {
-    if (currentLocation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Chưa xác định được vị trí của bạn!')),
-      );
-      return;
-    }
-
-    // Hiện Loading
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.green)),
-    );
-
-    try {
-      final stations = await _stationService.getAllStations();
-      if (!mounted) return;
-      Navigator.pop(context); // Tắt loading
-
-      if (stations.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Hệ thống hiện không có trạm nào!')),
-        );
-        return;
-      }
-
-      const distanceCalc = Distance();
-      Station? nearestStation;
-      double minDistance = double.infinity;
-
-      for (final station in stations) {
-        final dist = distanceCalc.as(
-          LengthUnit.Meter,
-          currentLocation!,
-          LatLng(station.latitude, station.longitude),
-        );
-        if (dist < minDistance) {
-          minDistance = dist;
-          nearestStation = station;
-        }
-      }
-
-      if (nearestStation != null && minDistance <= 20) {
-        // Trong phạm vi 20m -> Cho phép trả xe
-        _showReturnBikeDialog(context, nearestStation);
-      } else if (nearestStation != null) {
-        // Ngoài phạm vi 20m -> Hiển thị cảnh báo
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: const Row(
-              children: [
-                Icon(Icons.warning_amber_rounded, color: Colors.red, size: 28),
-                SizedBox(width: 8),
-                Text('Ngoài phạm vi', style: TextStyle(color: Colors.red)),
-              ],
-            ),
-            content: Text(
-              'Bạn phải trả xe trong phạm vi 20 mét của một trạm SmartBike.\n\n'
-              'Trạm gần nhất là "${nearestStation!.name}", cách bạn khoảng ${minDistance.toStringAsFixed(0)} mét.\n\n'
-              'Vui lòng di chuyển đến trạm để kết thúc chuyến đi.',
-              style: const TextStyle(height: 1.4),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Đóng', style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context); // Tắt popup
-                  // Tìm đường đến trạm đó
-                  _getRoute(SearchResult(
-                    displayName: nearestStation!.name,
-                    location: LatLng(nearestStation.latitude, nearestStation.longitude),
-                  ));
-                },
-                icon: const Icon(Icons.directions, color: Colors.white, size: 18),
-                label: const Text('Chỉ đường', style: TextStyle(color: Colors.white)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4285F4),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ],
-          ),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      Navigator.pop(context); // Tắt loading
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Lỗi kiểm tra trạm: $e')),
-      );
-    }
-  }
-
-  void _showReturnBikeDialog(BuildContext context, Station nearestStation) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Xác nhận trả xe?'),
-        content: const Text('Hệ thống sẽ kết thúc chuyến đi và tự động thanh toán từ ví của bạn.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Hủy', style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-            ),
-            onPressed: () async {
-              String finalTimeStr = _formatTime(_secondsElapsed);
-              int finalCost = _calculateCost();
-              String userId = FirebaseAuth.instance.currentUser?.uid ?? "";
-
-              showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.green)),
-              );
-
-              try {
-                String tripId = FirebaseFirestore.instance.collection('trips').doc().id;
-
-                await FirebaseFirestore.instance.collection('trips').doc(tripId).set({
-                  'tripId': tripId,
-                  'userId': userId,
-                  'bikeId': widget.bikeId,
-                  'duration': (_secondsElapsed / 60).ceil(),
-                  'cost': finalCost,
-                  'endLocation': nearestStation.name,
-                  'startTime': FieldValue.serverTimestamp(),
-                  'status': 'Completed',
-                });
-
-                await FirebaseFirestore.instance.collection('transactions').add({
-                  'userId': userId,
-                  'amount': finalCost,
-                  'type': 'trip_payment',
-                  'relatedTripId': tripId,
-                  'method': _isMonthlyTicket ? 'Vé tháng' : 'Ví SmartBike',
-                  'timestamp': FieldValue.serverTimestamp(),
-                });
-
-                if (finalCost > 0) {
-                  await FirebaseFirestore.instance.collection('users').doc(userId).update({
-                    'balance': FieldValue.increment(-finalCost),
-                  });
-                }
-
-                if (!mounted) return;
-                Navigator.pop(context); // Tắt loading
-                Navigator.pop(context); // Đóng popup xác nhận
-
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => InvoiceScreen(
-                      bikeId: widget.bikeId,
-                      duration: finalTimeStr,
-                      totalCost: finalCost,
-                    ),
-                  ),
-                );
-              } catch (e) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("Lỗi hệ thống: $e"), backgroundColor: Colors.red),
-                );
-              }
-            },
-            child: const Text('Xác nhận Trả', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
     );
   }
 
@@ -952,7 +730,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             children: [
               CircularProgressIndicator(),
               SizedBox(height: 16),
-              Text('Đang thiết lập chuyến đi...'),
+              Text('Đang lấy vị trí...'),
             ],
           ),
         ),
@@ -962,7 +740,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. LỚP BẢN ĐỒ VÀ TRẠM XE
+          // === BẢN ĐỒ VỚI STREAMBUILDER TRẠM XE ===
           StreamBuilder<List<Station>>(
             stream: _stationService.getStationsStream(),
             builder: (context, stationSnapshot) {
@@ -1002,11 +780,11 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                     ],
                   ),
 
-                  // ĐƯỜNG ĐI
+                  // === TẤT CẢ TUYẾN ĐƯỜNG ===
                   if (_routeResult != null)
                     PolylineLayer(polylines: _buildPolylines()),
 
-                  // MARKERS
+                  // === MARKERS ===
                   MarkerLayer(
                     markers: [
                       // Vị trí hiện tại
@@ -1034,7 +812,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                             ),
                           ),
                         ),
-                      // Marker các trạm
+                      // === MARKERS CÁC TRẠM XE ĐẠP ===
                       ...stations.map((station) => Marker(
                         point: LatLng(station.latitude, station.longitude),
                         width: 48,
@@ -1051,7 +829,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             },
           ),
 
-          // 2. THANH TÌM KIẾM
+          // === THANH TÌM KIẾM ===
           Positioned(
             top: MediaQuery.of(context).padding.top + 10,
             left: 12,
@@ -1072,19 +850,14 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   ),
                   child: Row(
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.arrow_back, color: Colors.grey),
-                        onPressed: () {
-                          if (_routeResult != null || _searchController.text.isNotEmpty) {
-                            _clearRoute();
-                          }
-                        },
-                      ),
+                      const SizedBox(width: 14),
+                      const Icon(Icons.search, color: Color(0xFF4285F4)),
+                      const SizedBox(width: 10),
                       Expanded(
                         child: TextField(
                           controller: _searchController,
                           decoration: const InputDecoration(
-                            hintText: 'Tìm địa điểm, trạm trả xe...',
+                            hintText: 'Tìm kiếm địa điểm...',
                             border: InputBorder.none,
                             contentPadding: EdgeInsets.symmetric(vertical: 14),
                           ),
@@ -1092,14 +865,17 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                           textInputAction: TextInputAction.search,
                         ),
                       ),
-                      if (_searchController.text.isNotEmpty || _routeResult != null)
+                      if (_searchController.text.isNotEmpty ||
+                          _routeResult != null)
                         IconButton(
                           icon: const Icon(Icons.close, color: Colors.grey),
                           onPressed: _clearRoute,
                         ),
                       IconButton(
-                        icon: const Icon(Icons.directions_bike, color: Color(0xFF4285F4)),
-                        onPressed: () => _searchAddress(_searchController.text),
+                        icon: const Icon(Icons.directions_bike,
+                            color: Color(0xFF4285F4)),
+                        onPressed: () =>
+                            _searchAddress(_searchController.text),
                       ),
                     ],
                   ),
@@ -1128,7 +904,8 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                               child: SizedBox(
                                 width: 24,
                                 height: 24,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               ),
                             ),
                           )
@@ -1144,7 +921,8 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                                 shrinkWrap: true,
                                 padding: EdgeInsets.zero,
                                 itemCount: _searchResults.length,
-                                separatorBuilder: (_, __) => const Divider(height: 1),
+                                separatorBuilder: (_, __) =>
+                                    const Divider(height: 1),
                                 itemBuilder: (context, index) {
                                   final result = _searchResults[index];
                                   return ListTile(
@@ -1168,7 +946,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             ),
           ),
 
-          // 3. LOADING ROUTE
+          // === LOADING ROUTE ===
           if (_isLoadingRoute)
             Container(
               color: Colors.black26,
@@ -1189,14 +967,17 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               ),
             ),
 
-          // 4. THÔNG TIN ĐƯỜNG ĐI
+          // === THÔNG TIN ĐƯỜNG ĐI ===
           if (_routeResult != null)
             Positioned(
-              bottom: 230, 
+              bottom: 20,
               left: 12,
               right: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
@@ -1210,7 +991,8 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.directions_bike, color: Color(0xFF4285F4), size: 28),
+                    const Icon(Icons.directions_bike,
+                        color: Color(0xFF4285F4), size: 28),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
@@ -1249,140 +1031,16 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 ),
               ),
             ),
-
-          // 5. THÔNG TIN CHUYẾN ĐI (BOTTOM PANEL)
+          
+          // === NÚT DANH SÁCH TRẠM ===
           Positioned(
-            bottom: 16,
-            left: 16,
-            right: 16,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.15),
-                    blurRadius: 15,
-                    offset: const Offset(0, 5),
-                  )
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          TweenAnimationBuilder(
-                            tween: Tween<double>(begin: 0, end: 5),
-                            duration: const Duration(milliseconds: 500),
-                            builder: (context, double value, child) {
-                              return Padding(
-                                padding: EdgeInsets.only(bottom: value),
-                                child: Icon(Icons.pedal_bike, size: 28, color: Colors.green[600]),
-                              );
-                            },
-                            onEnd: () => setState(() {}),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            'Mã xe: ${widget.bikeId}',
-                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
-                          ),
-                        ],
-                      ),
-                      if (_isMonthlyTicket)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.blue[50],
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.blue.shade200),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.verified, color: Colors.blue, size: 14),
-                              SizedBox(width: 4),
-                              Text("Vé Tháng", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12)),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                  
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Divider(height: 1),
-                  ),
-
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      Column(
-                        children: [
-                          const Text('THỜI GIAN', style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 4),
-                          Text(
-                            _formatTime(_secondsElapsed),
-                            style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.black87, fontFeatures: [FontFeature.tabularFigures()]),
-                          ),
-                        ],
-                      ),
-                      Container(width: 1, height: 40, color: Colors.grey[300]),
-                      Column(
-                        children: [
-                          const Text('TẠM TÍNH', style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 4),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              Text(
-                                '${_calculateCost()}',
-                                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.orange[800]),
-                              ),
-                              const SizedBox(width: 4),
-                              const Text('VNĐ', style: TextStyle(fontSize: 14, color: Colors.orange, fontWeight: FontWeight.w600)),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red.shade600,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        elevation: 0,
-                      ),
-                      onPressed: () => _checkAndReturnBike(context),
-                      child: const Text('KẾT THÚC CHUYẾN ĐI', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // 6. NÚT MỞ DANH SÁCH TRẠM
-          Positioned(
-            bottom: _routeResult != null ? 310 : 250,
+            bottom: 120, // Đặt cao hơn bottom một chút để không đè lên nút QUÉT ĐỂ THUÊ và nút attribution (i)
             right: 16,
             child: FloatingActionButton(
-              heroTag: 'active_trip_station_list_fab',
+              heroTag: 'station_list_fab', // Cần heroTag vì có thể ở ngoài màn hình chính cũng có FAB
               onPressed: _showStationListBottomSheet,
-              backgroundColor: Colors.white,
-              child: const Icon(Icons.list, color: Color(0xFF1A1A2E)),
+              backgroundColor: const Color(0xFF4285F4),
+              child: const Icon(Icons.list, color: Colors.white),
             ),
           ),
         ],
