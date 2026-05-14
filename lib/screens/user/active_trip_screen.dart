@@ -9,25 +9,16 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'invoice_screen.dart';
 import '../../models/station_model.dart';
-import '../../models/bike_model.dart';
 import '../../services/location_service.dart';
 import '../../services/routing_service.dart';
 import '../../services/station_service.dart';
-import '../../services/bike_service.dart';
 import '../../widgets/location_indicator.dart';
 import '../../widgets/station_marker_icon.dart';
 
 class ActiveTripScreen extends StatefulWidget {
   final String bikeId;
-  final String startStationName;
-  final String tripId;
 
-  const ActiveTripScreen({
-    super.key, 
-    required this.bikeId, 
-    required this.startStationName,
-    required this.tripId,
-  });
+  const ActiveTripScreen({super.key, required this.bikeId});
 
   @override
   State<ActiveTripScreen> createState() => _ActiveTripScreenState();
@@ -38,10 +29,20 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   int _secondsElapsed = 0;
   Timer? _timer;
   bool _isMonthlyTicket = false;
+  bool _isDailyTicket = false;
+  int _userPoints = 0;
+  DateTime _tripStartTime = DateTime.now();
+
+  // === Trạm khởi hành ===
+  String _startStationName = '';
+  String _startStationId = '';
 
   // === Vị trí ===
   LatLng? currentLocation = const LatLng(21.028511, 105.804817); // Mặc định ở Hà Nội để load bản đồ trong 0s
+  LatLng? _startLocation; // Vị trí GPS lúc bắt đầu chuyến đi
   double _heading = 0;
+  double _totalDistanceKm = 0; // Tổng quãng đường đã đi
+  LatLng? _lastTrackedLocation; // Vị trí GPS gần nhất để tính khoảng cách
   final MapController _mapController = MapController();
   final LocationService _locationService = LocationService();
 
@@ -65,7 +66,9 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   @override
   void initState() {
     super.initState();
+    _tripStartTime = DateTime.now();
     _checkUserStatus();
+    _loadStartStation();
     _startTimer();
     _initLocationTracking();
   }
@@ -88,12 +91,78 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     try {
       var userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
       if (userDoc.exists) {
+        final data = userDoc.data() as Map<String, dynamic>;
+        bool hasMonthly = false;
+        bool hasDaily = false;
+        
+        var monthly = data['monthlyTicket'];
+        if (monthly != null && monthly['expiryDate'] != null) {
+          if ((monthly['expiryDate'] as Timestamp).toDate().isAfter(DateTime.now())) {
+            hasMonthly = true;
+          }
+        }
+        
+        var daily = data['dailyTicket'];
+        if (daily != null && daily['expiryDate'] != null) {
+          if ((daily['expiryDate'] as Timestamp).toDate().isAfter(DateTime.now())) {
+            hasDaily = true;
+          }
+        }
+
         setState(() {
-          _isMonthlyTicket = userDoc.data()?['isMonthlyTicket'] ?? false;
+          _isMonthlyTicket = hasMonthly;
+          _isDailyTicket = hasDaily;
+          _userPoints = data['points'] ?? 0;
         });
       }
     } catch (e) {
       debugPrint("Lỗi lấy dữ liệu người dùng: $e");
+    }
+  }
+
+  /// Lấy thông tin trạm khởi hành từ xe đang mượn
+  Future<void> _loadStartStation() async {
+    try {
+      // Tìm xe trong Firestore để lấy stationId hiện tại
+      final bikeQuery = await FirebaseFirestore.instance
+          .collection('bikes')
+          .where('bikeId', isEqualTo: widget.bikeId)
+          .limit(1)
+          .get();
+
+      if (bikeQuery.docs.isNotEmpty) {
+        final bikeData = bikeQuery.docs.first.data();
+        final stationId = bikeData['stationId'] ?? '';
+
+        if (stationId.isNotEmpty) {
+          // Tìm tên trạm từ stationId
+          final stationQuery = await FirebaseFirestore.instance
+              .collection('stations')
+              .where('stationId', isEqualTo: stationId)
+              .limit(1)
+              .get();
+
+          if (stationQuery.docs.isNotEmpty) {
+            final stationData = stationQuery.docs.first.data();
+            setState(() {
+              _startStationName = stationData['name'] ?? stationId;
+              _startStationId = stationQuery.docs.first.id;
+            });
+          } else {
+            // Fallback: thử tìm bằng document ID
+            final stationDoc = await FirebaseFirestore.instance
+                .collection('stations').doc(stationId).get();
+            if (stationDoc.exists) {
+              setState(() {
+                _startStationName = stationDoc.data()?['name'] ?? stationId;
+                _startStationId = stationDoc.id;
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Lỗi lấy thông tin trạm khởi hành: $e');
     }
   }
 
@@ -115,24 +184,26 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
   int _calculateCost() {
     int totalMinutes = (_secondsElapsed / 60).ceil();
-    int finalAmount = 0;
-
+    
+    // 1. Nếu có vé tháng -> miễn phí 300 phút (5 tiếng) đầu mỗi chuyến
     if (_isMonthlyTicket) {
-      if (totalMinutes <= 60) {
-        finalAmount = 0;
-      } else {
-        int extraTime = totalMinutes - 60;
-        finalAmount = (extraTime / 10).ceil() * 3000;
-      }
-    } else {
-      if (totalMinutes <= 60) {
-        finalAmount = 10000;
-      } else {
-        int extraTime = totalMinutes - 60;
-        finalAmount = 10000 + (extraTime / 10).ceil() * 3000;
-      }
+      if (totalMinutes <= 300) return 0;
+      return ((totalMinutes - 300) / 15).ceil() * 3000;
     }
-    return finalAmount;
+    
+    // 2. Nếu có vé lượt -> miễn phí 120 phút (2 tiếng) đầu mỗi chuyến
+    if (_isDailyTicket) {
+      if (totalMinutes <= 120) return 0;
+      return ((totalMinutes - 120) / 15).ceil() * 3000;
+    }
+
+    // 3. Không có vé -> 10k cho 60 phút đầu, sau đó 3k/15 phút
+    if (totalMinutes <= 60) {
+      return 10000;
+    } else {
+      int extraTime = totalMinutes - 60;
+      return 10000 + (extraTime / 15).ceil() * 3000;
+    }
   }
 
   // =============================================
@@ -172,6 +243,24 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
       _locationService.startPositionStream(
         onLocationChanged: (locationData) {
           if (mounted) {
+            // Tính quãng đường thực tế đã đi
+            if (_lastTrackedLocation != null) {
+              const distCalc = Distance();
+              final segmentMeters = distCalc.as(
+                LengthUnit.Meter,
+                _lastTrackedLocation!,
+                locationData.position,
+              );
+              // Chỉ cộng nếu di chuyển > 5m (loại bỏ nhiễu GPS)
+              if (segmentMeters > 5) {
+                _totalDistanceKm += segmentMeters / 1000;
+                _lastTrackedLocation = locationData.position;
+              }
+            } else {
+              _lastTrackedLocation = locationData.position;
+              _startLocation ??= locationData.position;
+            }
+
             setState(() {
               currentLocation = locationData.position;
               _heading = locationData.heading;
@@ -451,46 +540,30 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   color: const Color(0xFFF5F5F5),
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: StreamBuilder<List<Bike>>(
-                  stream: BikeService().getBikesByStationStream(station.id),
-                  builder: (context, bikeSnap) {
-                    final allBikes = bikeSnap.data ?? [];
-                    final availableBikes = allBikes.where((b) => b.status == 'available').length;
-                    final inUseBikes = allBikes.where((b) => b.status == 'in_use').length;
-                    final emptySlots = station.capacity - availableBikes;
-                    return Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _buildInfoItem(
-                          icon: Icons.pedal_bike,
-                          value: '$availableBikes',
-                          label: 'Xe có sẵn',
-                          color: const Color(0xFF4CAF50),
-                        ),
-                        Container(width: 1, height: 40, color: Colors.grey[300]),
-                        _buildInfoItem(
-                          icon: Icons.directions_bike,
-                          value: '$inUseBikes',
-                          label: 'Đang mượn',
-                          color: const Color(0xFFE91E63),
-                        ),
-                        Container(width: 1, height: 40, color: Colors.grey[300]),
-                        _buildInfoItem(
-                          icon: Icons.local_parking,
-                          value: '${emptySlots < 0 ? 0 : emptySlots}',
-                          label: 'Chỗ trống',
-                          color: const Color(0xFF2196F3),
-                        ),
-                        Container(width: 1, height: 40, color: Colors.grey[300]),
-                        _buildInfoItem(
-                          icon: Icons.ev_station,
-                          value: '${station.capacity}',
-                          label: 'Sức chứa',
-                          color: const Color(0xFFFF9800),
-                        ),
-                      ],
-                    );
-                  },
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildInfoItem(
+                      icon: Icons.pedal_bike,
+                      value: '${station.currentBikes}',
+                      label: 'Xe có sẵn',
+                      color: const Color(0xFF4CAF50),
+                    ),
+                    Container(width: 1, height: 40, color: Colors.grey[300]),
+                    _buildInfoItem(
+                      icon: Icons.local_parking,
+                      value: '${station.capacity - station.currentBikes}',
+                      label: 'Chỗ trống',
+                      color: const Color(0xFF2196F3),
+                    ),
+                    Container(width: 1, height: 40, color: Colors.grey[300]),
+                    _buildInfoItem(
+                      icon: Icons.ev_station,
+                      value: '${station.capacity}',
+                      label: 'Sức chứa',
+                      color: const Color(0xFFFF9800),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 20),
@@ -875,13 +948,21 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               );
 
               try {
-                DateTime end = DateTime.now();
-                await FirebaseFirestore.instance.collection('trips').doc(widget.tripId).update({
+                String tripId = FirebaseFirestore.instance.collection('trips').doc().id;
+
+                await FirebaseFirestore.instance.collection('trips').doc(tripId).set({
+                  'tripId': tripId,
+                  'userId': userId,
+                  'bikeId': widget.bikeId,
                   'duration': (_secondsElapsed / 60).ceil(),
+                  'distance': double.parse(_totalDistanceKm.toStringAsFixed(2)),
                   'cost': finalCost,
+                  'startLocation': _startStationName.isNotEmpty ? _startStationName : 'Không xác định',
+                  'startStationId': _startStationId,
                   'endLocation': nearestStation.name,
                   'endStationId': nearestStation.id,
-                  'endTime': Timestamp.fromDate(end),
+                  'startTime': Timestamp.fromDate(_tripStartTime),
+                  'endTime': FieldValue.serverTimestamp(),
                   'status': 'Completed',
                 });
 
@@ -889,8 +970,8 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   'userId': userId,
                   'amount': finalCost,
                   'type': 'trip_payment',
-                  'relatedTripId': widget.tripId,
-                  'method': _isMonthlyTicket ? 'Vé tháng' : 'Ví SmartBike',
+                  'relatedTripId': tripId,
+                  'method': _isMonthlyTicket ? 'Vé tháng' : (_isDailyTicket ? 'Vé lượt' : 'Ví SmartBike'),
                   'timestamp': FieldValue.serverTimestamp(),
                 });
 
@@ -898,22 +979,25 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   await FirebaseFirestore.instance.collection('users').doc(userId).update({
                     'balance': FieldValue.increment(-finalCost),
                   });
-                }
-
-                // Cập nhật trạng thái xe: Sẵn sàng và ở trạm mới
-                final bikeQuery = await FirebaseFirestore.instance
-                    .collection('bikes')
-                    .where('bikeId', isEqualTo: widget.bikeId)
-                    .limit(1)
-                    .get();
-                
-                if (bikeQuery.docs.isNotEmpty) {
-                  await bikeQuery.docs.first.reference.update({
-                    'status': 'available',
-                    'stationId': nearestStation.id,
-                    'currentUserId': null,
-                    'unlockTime': null,
-                  });
+                  
+                  // 💎 KIỂM TRA HOÀN TIỀN CHO HẠNG KIM CƯƠNG (Chuyến đi lẻ)
+                  bool isStandaloneTrip = !_isMonthlyTicket && !_isDailyTicket;
+                  if (isStandaloneTrip && _userPoints >= 10000) {
+                    int cashbackAmount = (finalCost * 0.05).round(); // Hoàn tiền 5%
+                    if (cashbackAmount > 0) {
+                      await FirebaseFirestore.instance.collection('users').doc(userId).update({
+                        'balance': FieldValue.increment(cashbackAmount),
+                      });
+                      
+                      await FirebaseFirestore.instance.collection('transactions').add({
+                        'userId': userId,
+                        'amount': cashbackAmount,
+                        'type': 'topup', // Để hiện dấu + màu xanh trong lịch sử
+                        'method': 'Hoàn tiền Kim cương',
+                        'timestamp': FieldValue.serverTimestamp(),
+                      });
+                    }
+                  }
                 }
 
                 if (!mounted) return;

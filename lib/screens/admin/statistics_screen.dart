@@ -782,7 +782,11 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     String bikeId = trip['bikeId'] ?? "---";
     String userId = trip['userId'] ?? "";
     int cost = trip['cost'] ?? 0;
+    String startLoc = trip['startLocation'] ?? "Không xác định";
     String endLoc = trip['endLocation'] ?? "Đang di chuyển...";
+    int duration = trip['duration'] ?? 0;
+    double distance = (trip['distance'] ?? 0).toDouble();
+    String status = trip['status'] ?? 'Unknown';
     Timestamp? startTime = trip['startTime'] as Timestamp?;
     
     return Container(
@@ -795,6 +799,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       ),
       child: Column(
         children: [
+          // Header: Xe + Thời gian + Giá
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -824,16 +829,34 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                   ),
                 ],
               ),
-              Text(
-                trip['status'] == 'Ongoing' ? 'Đang đi' : '${NumberFormat('#,###').format(cost)}đ', 
-                style: TextStyle(
-                  fontWeight: FontWeight.bold, 
-                  color: trip['status'] == 'Ongoing' ? Colors.blue : Colors.green
-                )
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    status == 'Ongoing' ? 'Đang đi' : '${NumberFormat('#,###').format(cost)}đ', 
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold, 
+                      color: status == 'Ongoing' ? Colors.blue : Colors.green
+                    )
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: status == 'Completed' ? Colors.green[50] : Colors.orange[50],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      status == 'Completed' ? '✓ Hoàn thành' : '● Đang đi',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: status == 'Completed' ? Colors.green : Colors.orange),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
           const Divider(height: 24),
+          // Khách hàng
           Row(
             children: [
               const Icon(Icons.person_outline, size: 16, color: Colors.grey),
@@ -843,22 +866,61 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
             ],
           ),
           const SizedBox(height: 8),
+          // Lộ trình: Điểm đầu → Điểm cuối
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Icon(Icons.location_on_outlined, size: 16, color: Colors.grey),
               const SizedBox(width: 8),
-              const Text('Lộ trình: ', style: TextStyle(fontSize: 13, color: Colors.grey)),
               Expanded(
-                child: Text(
-                  '${trip['startLocation'] ?? '...'} → ${trip['endLocation'] ?? 'Đang đi'}',
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle)),
+                        const SizedBox(width: 6),
+                        Expanded(child: Text(startLoc, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis)),
+                      ],
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 3),
+                      child: Container(width: 2, height: 14, color: Colors.grey[300]),
+                    ),
+                    Row(
+                      children: [
+                        Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle)),
+                        const SizedBox(width: 6),
+                        Expanded(child: Text(status == 'Ongoing' ? 'Đang di chuyển...' : endLoc, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis)),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 10),
+          // Thông số: Thời gian + Quãng đường
+          Row(
+            children: [
+              _buildMiniStat(Icons.timer_outlined, '$duration phút', Colors.orange),
+              const SizedBox(width: 16),
+              _buildMiniStat(Icons.route, '${distance.toStringAsFixed(2)} km', Colors.teal),
+            ],
+          ),
         ],
       ),
+    );
+  }
+
+  Widget _buildMiniStat(IconData icon, String text, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 4),
+        Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+      ],
     );
   }
 

@@ -4,7 +4,8 @@ import '../../models/station_model.dart';
 import '../../models/bike_model.dart';
 import '../../services/station_service.dart';
 import '../../services/bike_service.dart';
-
+import 'admin_map_picker_screen.dart';
+import 'package:latlong2/latlong.dart';
 class StationManagementScreen extends StatefulWidget {
   const StationManagementScreen({super.key});
 
@@ -221,6 +222,30 @@ class _StationManagementScreenState extends State<StationManagementScreen> {
                   const SizedBox(width: 8),
                   Expanded(child: TextField(controller: lngCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Longitude', border: OutlineInputBorder()))),
                 ]),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final lat = double.tryParse(latCtrl.text) ?? 21.0285;
+                      final lng = double.tryParse(lngCtrl.text) ?? 105.8542;
+                      final selectedLocation = await Navigator.push<LatLng>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => AdminMapPickerScreen(initialLocation: LatLng(lat, lng)),
+                        ),
+                      );
+                      if (selectedLocation != null) {
+                        setDialogState(() {
+                          latCtrl.text = selectedLocation.latitude.toStringAsFixed(6);
+                          lngCtrl.text = selectedLocation.longitude.toStringAsFixed(6);
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.map),
+                    label: const Text('Chọn vị trí trên bản đồ'),
+                  ),
+                ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: selectedStatus,

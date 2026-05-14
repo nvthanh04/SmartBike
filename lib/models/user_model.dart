@@ -40,6 +40,7 @@ class UserModel {
       balance: data['balance'] ?? 0,
       points: data['points'] ?? 0,
       isMonthlyTicket: data['isMonthlyTicket'] ?? false,
+      // 🆕 Chuyển từ Timestamp của Firebase sang DateTime của Dart
       expiryDate: data['expiryDate'] != null 
           ? (data['expiryDate'] as Timestamp).toDate() 
           : null,
@@ -60,6 +61,7 @@ class UserModel {
       'balance': balance,
       'points': points,
       'isMonthlyTicket': isMonthlyTicket,
+      // 🆕 Chuyển từ DateTime về Timestamp để Firebase hiểu
       'expiryDate': expiryDate != null ? Timestamp.fromDate(expiryDate!) : null,
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),

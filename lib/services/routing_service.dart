@@ -36,6 +36,7 @@ class RouteResult {
 
 class RoutingService {
   /// Tìm kiếm địa chỉ bằng Nominatim (OpenStreetMap Geocoding)
+  /// Giới hạn kết quả trong phạm vi Việt Nam, ưu tiên khu vực Hà Nội
   Future<List<SearchResult>> searchAddress(String query) async {
     if (query.trim().isEmpty) return [];
 
@@ -44,11 +45,15 @@ class RoutingService {
       '?q=${Uri.encodeComponent(query)}'
       '&format=json'
       '&limit=5'
-      '&addressdetails=1',
+      '&addressdetails=1'
+      '&countrycodes=vn'
+      '&viewbox=105.5,20.85,106.1,21.15'
+      '&bounded=0',
     );
 
     final response = await http.get(url, headers: {
       'User-Agent': 'SmartBike/1.0',
+      'Accept-Language': 'vi',
     });
 
     if (response.statusCode != 200) {
