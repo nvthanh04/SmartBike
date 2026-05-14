@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../user/user_main_screen.dart';
+import '../admin/admin_dashboard_screen.dart';
 import 'register_screen.dart'; // Quên chưa có file này thì tạo sau nhé
 
 class LoginScreen extends StatefulWidget {
@@ -26,17 +28,36 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
     try {
       // Gọi lệnh đăng nhập của Firebase
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      final userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // Nếu thành công -> Chuyển vào màn hình chính
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const UserMainScreen()),
-        );
+      // Kiểm tra role từ Firestore collection 'users'
+      if (mounted && userCredential.user != null) {
+        final uid = userCredential.user!.uid;
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .get();
+
+        final role = userDoc.data()?['role'] ?? 'user';
+
+        if (mounted) {
+          if (role == 'admin') {
+            // Admin → vào Admin Dashboard
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const AdminDashboardScreen()),
+            );
+          } else {
+            // User thường → vào màn hình User
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const UserMainScreen()),
+            );
+          }
+        }
       }
     } on FirebaseAuthException catch (e) {
       _showError("Tài khoản hoặc mật khẩu không chính xác!");

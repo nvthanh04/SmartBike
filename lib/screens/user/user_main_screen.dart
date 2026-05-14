@@ -4,6 +4,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'active_trip_screen.dart';
 import '../map_screen.dart';
 import 'package:intl/intl.dart'; 
+import 'dart:convert';
+import 'qr_scanner_screen.dart';
+import '../../models/bike_model.dart'; 
+import '../../models/station_model.dart';
+import '../../services/location_service.dart';
+import '../../services/station_service.dart';
+import 'package:latlong2/latlong.dart';
 
 class UserMainScreen extends StatefulWidget {
   const UserMainScreen({super.key});
@@ -15,6 +22,8 @@ class UserMainScreen extends StatefulWidget {
 class _UserMainScreenState extends State<UserMainScreen> {
   int _selectedIndex = 0;
   final Color primaryGreen = const Color(0xFF2ECC71); 
+  final StationService _stationService = StationService();
+  final LocationService _locationService = LocationService();
 
   List<Widget> _buildPages() {
     return [
@@ -580,7 +589,7 @@ class _UserMainScreenState extends State<UserMainScreen> {
       ),
       body: IndexedStack(index: _selectedIndex, children: _buildPages()),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showMockScanQRDialog(context),
+        onPressed: () => _startScanQRFlow(context),
         backgroundColor: const Color(0xFFFF9800), 
         icon: const Icon(Icons.qr_code_scanner, color: Colors.white),
         label: const Text('QUÉT ĐỂ THUÊ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
@@ -600,7 +609,170 @@ class _UserMainScreenState extends State<UserMainScreen> {
     );
   }
 
-  void _showMockScanQRDialog(BuildContext context) {
+  void _startScanQRFlow(BuildContext context) async {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.green)),
+    );
+
+    try {
+      await _locationService.checkPermission();
+      
+      final doc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+      if (!mounted) return;
+      Navigator.pop(context); // Hide loading
+
+      int balance = doc.data()?['balance'] ?? 0;
+      if (balance < 20000) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text("Số dư không đủ", style: TextStyle(color: Colors.red)),
+            content: const Text("Số dư ví của bạn phải lớn hơn hoặc bằng 20,000đ để có thể thuê xe.\n\nVui lòng nạp thêm tiền vào ví SmartBike."),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Đóng", style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: primaryGreen),
+                onPressed: () {
+                  Navigator.pop(context);
+                  setState(() => _selectedIndex = 2); // Chuyển sang tab Tôi
+                },
+                child: const Text("Nạp tiền", style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      // If balance is enough, open QR Scanner screen
+      final scannedQr = await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const QRScannerScreen()),
+      );
+
+      if (scannedQr != null && scannedQr is String) {
+        _handleScannedQR(context, scannedQr);
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Lỗi: $e")));
+    }
+  }
+
+  void _handleScannedQR(BuildContext context, String qrData) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.green)),
+    );
+
+    try {
+      // Find bike by qrData
+      final query = await FirebaseFirestore.instance
+          .collection('bikes')
+          .where('qrData', isEqualTo: qrData)
+          .limit(1)
+          .get();
+
+      Bike? bike;
+      if (query.docs.isNotEmpty) {
+        bike = Bike.fromJson(query.docs.first.data(), query.docs.first.id);
+      } else {
+        // Fallback: match by bikeId
+        final query2 = await FirebaseFirestore.instance
+          .collection('bikes')
+          .where('bikeId', isEqualTo: qrData)
+          .limit(1)
+          .get();
+        
+        if (query2.docs.isNotEmpty) {
+          bike = Bike.fromJson(query2.docs.first.data(), query2.docs.first.id);
+        }
+      }
+
+      if (bike == null) {
+        if (!mounted) return;
+        Navigator.pop(context); // close loading
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Mã QR không hợp lệ hoặc xe không tồn tại trong hệ thống.")));
+        return;
+      }
+
+      // --- KIỂM TRA KHOẢNG CÁCH ---
+      if (bike.stationId.isNotEmpty) {
+        final station = await _stationService.getStationById(bike.stationId);
+        if (station != null) {
+          // Lấy vị trí người dùng
+          final userLocData = await _locationService.getCurrentLocation();
+          
+          // Tính khoảng cách
+          const distanceCalc = Distance();
+          final distance = distanceCalc.as(
+            LengthUnit.Meter, 
+            userLocData.position, 
+            LatLng(station.latitude, station.longitude)
+          );
+
+          if (distance > 20) {
+            if (!mounted) return;
+            Navigator.pop(context); // close loading
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                title: const Row(
+                  children: [
+                    Icon(Icons.location_off, color: Colors.red),
+                    SizedBox(width: 10),
+                    Text("Ngoài phạm vi"),
+                  ],
+                ),
+                content: Text("Bạn đang ở quá xa trạm xe (cách khoảng ${distance.toInt()}m).\n\nVui lòng đứng trong phạm vi 20m so với trạm ${station.name} để có thể thuê xe."),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text("Đóng"),
+                  ),
+                ],
+              ),
+            );
+            return;
+          }
+        }
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context); // close loading
+      _showConfirmBikeDialog(context, bike);
+
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Lỗi: $e")));
+    }
+  }
+
+  void _showConfirmBikeDialog(BuildContext context, Bike bike) {
+    if (bike.status != 'available') {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text("Không thể thuê xe"),
+          content: Text("Xe này hiện đang ở trạng thái: ${bike.status}. Vui lòng chọn xe khác."),
+          actions: [TextButton(onPressed: ()=>Navigator.pop(context), child: const Text("Đóng"))],
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -608,22 +780,62 @@ class _UserMainScreenState extends State<UserMainScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.qr_code_scanner, size: 80, color: primaryGreen),
+            if (bike.qrImageBase64.isNotEmpty)
+               Image.memory(base64Decode(bike.qrImageBase64), height: 120, width: 120)
+            else
+               Icon(Icons.qr_code_scanner, size: 80, color: primaryGreen),
             const SizedBox(height: 16),
-            const Text("Tìm thấy xe BIKE-001", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const Text("Giá thuê: 1.000đ / phút"),
+            Text("Tìm thấy xe: ${bike.bikeName}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text("Mã xe: ${bike.bikeId}", style: const TextStyle(color: Colors.grey)),
+            const SizedBox(height: 8),
+            const Text("Giá thuê: 1.000đ / phút", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.orange)),
             const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: primaryGreen),
-                onPressed: () {
-                  Navigator.pop(context);
-                  Navigator.push(context, MaterialPageRoute(builder: (context) => const ActiveTripScreen(bikeId: 'BIKE-001')));
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primaryGreen,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () async {
+                  // Cập nhật trạng thái xe sang 'in_use' trước khi bắt đầu
+                  try {
+                    await FirebaseFirestore.instance.collection('bikes').doc(bike.id).update({
+                      'status': 'in_use',
+                      'currentUserId': FirebaseAuth.instance.currentUser?.uid,
+                      'unlockTime': FieldValue.serverTimestamp(),
+                    });
+                    
+                    // Lấy tên trạm bắt đầu
+                    String startStationName = "Trạm không xác định";
+                    if (bike.stationId.isNotEmpty) {
+                      final sDoc = await FirebaseFirestore.instance.collection('stations').doc(bike.stationId).get();
+                      if (sDoc.exists) {
+                        startStationName = sDoc.data()?['name'] ?? "Trạm không tên";
+                      }
+                    }
+
+                    if (mounted) {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (context) => ActiveTripScreen(
+                        bikeId: bike.bikeId,
+                        startStationName: startStationName,
+                      )));
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Lỗi khởi tạo chuyến đi: $e")));
+                    }
+                  }
                 },
-                child: const Text("BẮT ĐẦU CHUYẾN ĐI", style: TextStyle(color: Colors.white)),
+                child: const Text("XÁC NHẬN BẮT ĐẦU CHUYẾN ĐI", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
-            )
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Hủy", style: TextStyle(color: Colors.grey)),
+            ),
           ],
         ),
       ),

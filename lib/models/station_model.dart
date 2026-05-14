@@ -9,6 +9,7 @@ class Station {
   final double longitude;
   final int capacity; // Sức chứa tối đa
   int currentBikes; // Số xe đang có tại trạm
+  final String status; // 'active' hoặc 'maintenance'
 
   Station({
     required this.id,
@@ -19,6 +20,7 @@ class Station {
     required this.longitude,
     required this.capacity,
     required this.currentBikes,
+    this.status = 'active',
   });
 
   // Chuyển từ JSON (Database) sang Object
@@ -47,6 +49,7 @@ class Station {
       longitude: lng,
       capacity: json['capacity'] ?? 0,
       currentBikes: json['currentBikes'] ?? 0,
+      status: json['status'] ?? 'active',
     );
   }
 
@@ -59,6 +62,7 @@ class Station {
       'location': GeoPoint(latitude, longitude),
       'capacity': capacity,
       'currentBikes': currentBikes,
+      'status': status,
     };
   }
 }

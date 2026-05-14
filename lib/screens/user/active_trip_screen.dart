@@ -9,16 +9,19 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'invoice_screen.dart';
 import '../../models/station_model.dart';
+import '../../models/bike_model.dart';
 import '../../services/location_service.dart';
 import '../../services/routing_service.dart';
 import '../../services/station_service.dart';
+import '../../services/bike_service.dart';
 import '../../widgets/location_indicator.dart';
 import '../../widgets/station_marker_icon.dart';
 
 class ActiveTripScreen extends StatefulWidget {
   final String bikeId;
+  final String startStationName;
 
-  const ActiveTripScreen({super.key, required this.bikeId});
+  const ActiveTripScreen({super.key, required this.bikeId, required this.startStationName});
 
   @override
   State<ActiveTripScreen> createState() => _ActiveTripScreenState();
@@ -442,30 +445,46 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   color: const Color(0xFFF5F5F5),
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildInfoItem(
-                      icon: Icons.pedal_bike,
-                      value: '${station.currentBikes}',
-                      label: 'Xe có sẵn',
-                      color: const Color(0xFF4CAF50),
-                    ),
-                    Container(width: 1, height: 40, color: Colors.grey[300]),
-                    _buildInfoItem(
-                      icon: Icons.local_parking,
-                      value: '${station.capacity - station.currentBikes}',
-                      label: 'Chỗ trống',
-                      color: const Color(0xFF2196F3),
-                    ),
-                    Container(width: 1, height: 40, color: Colors.grey[300]),
-                    _buildInfoItem(
-                      icon: Icons.ev_station,
-                      value: '${station.capacity}',
-                      label: 'Sức chứa',
-                      color: const Color(0xFFFF9800),
-                    ),
-                  ],
+                child: StreamBuilder<List<Bike>>(
+                  stream: BikeService().getBikesByStationStream(station.id),
+                  builder: (context, bikeSnap) {
+                    final allBikes = bikeSnap.data ?? [];
+                    final availableBikes = allBikes.where((b) => b.status == 'available').length;
+                    final inUseBikes = allBikes.where((b) => b.status == 'in_use').length;
+                    final emptySlots = station.capacity - availableBikes;
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildInfoItem(
+                          icon: Icons.pedal_bike,
+                          value: '$availableBikes',
+                          label: 'Xe có sẵn',
+                          color: const Color(0xFF4CAF50),
+                        ),
+                        Container(width: 1, height: 40, color: Colors.grey[300]),
+                        _buildInfoItem(
+                          icon: Icons.directions_bike,
+                          value: '$inUseBikes',
+                          label: 'Đang mượn',
+                          color: const Color(0xFFE91E63),
+                        ),
+                        Container(width: 1, height: 40, color: Colors.grey[300]),
+                        _buildInfoItem(
+                          icon: Icons.local_parking,
+                          value: '${emptySlots < 0 ? 0 : emptySlots}',
+                          label: 'Chỗ trống',
+                          color: const Color(0xFF2196F3),
+                        ),
+                        Container(width: 1, height: 40, color: Colors.grey[300]),
+                        _buildInfoItem(
+                          icon: Icons.ev_station,
+                          value: '${station.capacity}',
+                          label: 'Sức chứa',
+                          color: const Color(0xFFFF9800),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
               const SizedBox(height: 20),
@@ -852,14 +871,19 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               try {
                 String tripId = FirebaseFirestore.instance.collection('trips').doc().id;
 
+                DateTime end = DateTime.now();
+                DateTime start = end.subtract(Duration(seconds: _secondsElapsed));
+
                 await FirebaseFirestore.instance.collection('trips').doc(tripId).set({
                   'tripId': tripId,
                   'userId': userId,
                   'bikeId': widget.bikeId,
                   'duration': (_secondsElapsed / 60).ceil(),
                   'cost': finalCost,
+                  'startLocation': widget.startStationName,
                   'endLocation': nearestStation.name,
-                  'startTime': FieldValue.serverTimestamp(),
+                  'startTime': Timestamp.fromDate(start),
+                  'endTime': Timestamp.fromDate(end),
                   'status': 'Completed',
                 });
 
@@ -875,6 +899,22 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 if (finalCost > 0) {
                   await FirebaseFirestore.instance.collection('users').doc(userId).update({
                     'balance': FieldValue.increment(-finalCost),
+                  });
+                }
+
+                // Cập nhật trạng thái xe: Sẵn sàng và ở trạm mới
+                final bikeQuery = await FirebaseFirestore.instance
+                    .collection('bikes')
+                    .where('bikeId', isEqualTo: widget.bikeId)
+                    .limit(1)
+                    .get();
+                
+                if (bikeQuery.docs.isNotEmpty) {
+                  await bikeQuery.docs.first.reference.update({
+                    'status': 'available',
+                    'stationId': nearestStation.id,
+                    'currentUserId': null,
+                    'unlockTime': null,
                   });
                 }
 

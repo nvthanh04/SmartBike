@@ -49,6 +49,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '157457266727',
     projectId: 'smartbike-5e0fe',
     authDomain: 'smartbike-5e0fe.firebaseapp.com',
+    databaseURL: 'https://smartbike-5e0fe-default-rtdb.firebaseio.com',
     storageBucket: 'smartbike-5e0fe.firebasestorage.app',
     measurementId: 'G-9709G6ERLQ',
   );
@@ -58,6 +59,7 @@ class DefaultFirebaseOptions {
     appId: '1:157457266727:android:ac79b8bce59e9cd043b602',
     messagingSenderId: '157457266727',
     projectId: 'smartbike-5e0fe',
+    databaseURL: 'https://smartbike-5e0fe-default-rtdb.firebaseio.com',
     storageBucket: 'smartbike-5e0fe.firebasestorage.app',
   );
 
@@ -76,6 +78,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '157457266727',
     projectId: 'smartbike-5e0fe',
     authDomain: 'smartbike-5e0fe.firebaseapp.com',
+    databaseURL: 'https://smartbike-5e0fe-default-rtdb.firebaseio.com',
     storageBucket: 'smartbike-5e0fe.firebasestorage.app',
     measurementId: 'G-CER5MB022P',
   );
