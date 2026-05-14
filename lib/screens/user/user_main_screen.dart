@@ -801,26 +801,46 @@ class _UserMainScreenState extends State<UserMainScreen> {
                 onPressed: () async {
                   // Cập nhật trạng thái xe sang 'in_use' trước khi bắt đầu
                   try {
+                    String userId = FirebaseAuth.instance.currentUser?.uid ?? "";
+                    String tripId = FirebaseFirestore.instance.collection('trips').doc().id;
+
                     await FirebaseFirestore.instance.collection('bikes').doc(bike.id).update({
                       'status': 'in_use',
-                      'currentUserId': FirebaseAuth.instance.currentUser?.uid,
+                      'currentUserId': userId,
                       'unlockTime': FieldValue.serverTimestamp(),
                     });
                     
-                    // Lấy tên trạm bắt đầu
+                    // Lấy thông tin trạm bắt đầu
                     String startStationName = "Trạm không xác định";
-                    if (bike.stationId.isNotEmpty) {
-                      final sDoc = await FirebaseFirestore.instance.collection('stations').doc(bike.stationId).get();
+                    String startStationId = bike.stationId;
+                    if (startStationId.isNotEmpty) {
+                      final sDoc = await FirebaseFirestore.instance.collection('stations').doc(startStationId).get();
                       if (sDoc.exists) {
                         startStationName = sDoc.data()?['name'] ?? "Trạm không tên";
                       }
                     }
+
+                    // TẠO BẢN GHI CHUYẾN ĐI NGAY LẬP TỨC (Real-time)
+                    await FirebaseFirestore.instance.collection('trips').doc(tripId).set({
+                      'tripId': tripId,
+                      'userId': userId,
+                      'bikeId': bike.bikeId,
+                      'duration': 0,
+                      'cost': 0,
+                      'startLocation': startStationName,
+                      'startStationId': startStationId,
+                      'endLocation': 'Đang di chuyển...',
+                      'endStationId': '',
+                      'startTime': FieldValue.serverTimestamp(),
+                      'status': 'Ongoing',
+                    });
 
                     if (mounted) {
                       Navigator.pop(context);
                       Navigator.push(context, MaterialPageRoute(builder: (context) => ActiveTripScreen(
                         bikeId: bike.bikeId,
                         startStationName: startStationName,
+                        tripId: tripId, // Truyền tripId sang màn hình đang di chuyển
                       )));
                     }
                   } catch (e) {

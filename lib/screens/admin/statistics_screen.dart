@@ -46,8 +46,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
             // 1. TỔNG QUAN (CON SỐ)
             _buildSummaryCards(),
 
-            // 2. BIỂU ĐỒ THEO GIỜ
-            _buildHourlyChart(),
+            // 2. BIỂU ĐỒ SO SÁNH
+            _buildChartsSection(),
 
             // 3. LỊCH SỬ CHI TIẾT
             _buildTripHistoryList(),
@@ -132,7 +132,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     Colors.amber,
   ];
 
-  Widget _buildHourlyChart() {
+  Widget _buildChartsSection() {
     DateTime startOfDay = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
     DateTime endOfDay = startOfDay.add(const Duration(days: 1));
 
@@ -141,189 +141,399 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       builder: (context, stationSnapshot) {
         if (!stationSnapshot.hasData) return const SizedBox();
         
-        final stations = stationSnapshot.data!.docs
+        final allStations = stationSnapshot.data!.docs
             .map((doc) => Station.fromJson(doc.data() as Map<String, dynamic>, doc.id))
             .toList();
 
-        return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16),
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15)],
+        return StreamBuilder<QuerySnapshot>(
+          stream: _firestore.collection('trips')
+              .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+              .where('startTime', isLessThan: Timestamp.fromDate(endOfDay))
+              .snapshots(),
+          builder: (context, tripSnapshot) {
+            if (!tripSnapshot.hasData) return const Center(child: CircularProgressIndicator());
+            
+            final trips = tripSnapshot.data!.docs;
+            
+            return Column(
+              children: [
+                _buildBorrowReturnChart(allStations, trips),
+                const SizedBox(height: 24),
+                _buildTenMinuteActivityChart(allStations, trips),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildBorrowReturnChart(List<Station> stations, List<QueryDocumentSnapshot> trips) {
+    Map<String, int> borrows = {};
+    Map<String, int> returns = {};
+    Set<String> activeIds = {};
+
+    for (var doc in trips) {
+      final data = doc.data() as Map<String, dynamic>;
+      String startId = data['startStationId'] ?? "";
+      String endId = data['endStationId'] ?? "";
+      String startLoc = data['startLocation'] ?? "";
+      String endLoc = data['endLocation'] ?? "";
+
+      // Fallback if ID missing
+      if (startId.isEmpty && startLoc.isNotEmpty) {
+        try { startId = stations.firstWhere((s) => s.name == startLoc).id; } catch (_) {}
+      }
+      if (endId.isEmpty && endLoc.isNotEmpty) {
+        try { endId = stations.firstWhere((s) => s.name == endLoc).id; } catch (_) {}
+      }
+
+      if (startId.isNotEmpty) {
+        borrows[startId] = (borrows[startId] ?? 0) + 1;
+        activeIds.add(startId);
+      }
+      if (endId.isNotEmpty && data['status'] == 'Completed') {
+        returns[endId] = (returns[endId] ?? 0) + 1;
+        activeIds.add(endId);
+      }
+    }
+
+    final displayStations = stations.where((s) => activeIds.contains(s.id)).toList();
+    if (displayStations.isEmpty) return _buildNoDataChart('So sánh Mượn & Trả theo Trạm');
+
+    int maxVal = 0;
+    List<BarChartGroupData> groups = [];
+    for (int i = 0; i < displayStations.length; i++) {
+      int bCount = borrows[displayStations[i].id] ?? 0;
+      int rCount = returns[displayStations[i].id] ?? 0;
+      if (bCount > maxVal) maxVal = bCount;
+      if (rCount > maxVal) maxVal = rCount;
+
+      groups.add(BarChartGroupData(
+        x: i,
+        barRods: [
+          BarChartRodData(toY: bCount.toDouble(), color: Colors.blue, width: 8, borderRadius: BorderRadius.circular(4)),
+          BarChartRodData(toY: rCount.toDouble(), color: Colors.orange, width: 8, borderRadius: BorderRadius.circular(4)),
+        ],
+        barsSpace: 4,
+      ));
+    }
+
+    return _buildChartContainer(
+      title: 'So sánh Mượn & Trả theo Trạm',
+      chart: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: (maxVal == 0 ? 5 : maxVal.toDouble() + 1),
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                return BarTooltipItem(
+                  '${displayStations[groupIndex].name}\n',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  children: [
+                    TextSpan(
+                      text: rodIndex == 0 ? 'Mượn: ${rod.toY.toInt()}' : 'Trả: ${rod.toY.toInt()}',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.normal),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('So sánh lượt mượn theo trạm', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  Text(DateFormat('dd/MM/yyyy').format(_selectedDate), style: const TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.w600)),
-                ],
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() < 0 || value.toInt() >= displayStations.length) return const SizedBox();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Text('${value.toInt() + 1}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                  );
+                },
               ),
-              const SizedBox(height: 20),
-              
-              SizedBox(
-                height: 220,
-                child: StreamBuilder<QuerySnapshot>(
-                  stream: _firestore.collection('trips')
-                      .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-                      .where('startTime', isLessThan: Timestamp.fromDate(endOfDay))
-                      .snapshots(),
-                  builder: (context, snapshot) {
-                    if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+            ),
+            leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: const FlGridData(show: false),
+          borderData: FlBorderData(show: false),
+          barGroups: groups,
+        ),
+      ),
+      legend: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildLegendItem('Mượn', Colors.blue),
+              const SizedBox(width: 20),
+              _buildLegendItem('Trả', Colors.orange),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: List.generate(displayStations.length, (i) {
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: Colors.blueGrey.withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
+                    child: Text('${i + 1}', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(displayStations[i].name, style: TextStyle(fontSize: 11, color: Colors.grey[800])),
+                ],
+              );
+            }),
+          ),
+        ],
+      ),
+    );
+  }
 
-                    // Xử lý dữ liệu gom nhóm theo giờ và trạm
-                    Map<int, Map<String, int>> stationHourlyData = {};
-                    Set<String> activeStationIds = {};
+  Widget _buildTenMinuteActivityChart(List<Station> stations, List<QueryDocumentSnapshot> trips) {
+    // key: slotIndex (0-143), value: {stationId: count}
+    Map<int, Map<String, int>> slotData = {};
+    
+    for (var doc in trips) {
+      final data = doc.data() as Map<String, dynamic>;
+      Timestamp? ts = data['startTime'] as Timestamp?;
+      if (ts != null) {
+        DateTime dt = ts.toDate();
+        int slot = (dt.hour * 6) + (dt.minute ~/ 10);
+        String stationId = data['startStationId'] ?? "";
+        
+        // Fallback for missing ID
+        if (stationId.isEmpty) {
+          String startLoc = data['startLocation'] ?? "";
+          try { stationId = stations.firstWhere((s) => s.name == startLoc).id; } catch (_) {}
+        }
 
-                    for (var doc in snapshot.data!.docs) {
-                      final trip = doc.data() as Map<String, dynamic>;
-                      Timestamp? ts = trip['startTime'] as Timestamp?;
-                      if (ts == null) continue;
-                      
-                      int hour = ts.toDate().hour;
-                      String stationId = trip['startStationId'] ?? "";
-                      String startLocation = trip['startLocation'] ?? "";
-                      
-                      // Nếu không có stationId, tìm ID thông qua tên trạm
-                      if (stationId.isEmpty && startLocation.isNotEmpty) {
-                        try {
-                          stationId = stations.firstWhere((s) => s.name == startLocation).id;
-                        } catch (_) {}
-                      }
-                      
-                      if (stationId.isEmpty) stationId = "unknown";
-                      
-                      activeStationIds.add(stationId);
-                      stationHourlyData.putIfAbsent(hour, () => {});
-                      stationHourlyData[hour]![stationId] = (stationHourlyData[hour]![stationId] ?? 0) + 1;
+        if (stationId.isNotEmpty) {
+          slotData.putIfAbsent(slot, () => {});
+          slotData[slot]![stationId] = (slotData[slot]![stationId] ?? 0) + 1;
+        }
+      }
+    }
+
+    int maxVal = 0;
+    List<BarChartGroupData> groups = List.generate(144, (slot) {
+      int totalInSlot = 0;
+      slotData[slot]?.values.forEach((v) => totalInSlot += v);
+      if (totalInSlot > maxVal) maxVal = totalInSlot;
+
+      return BarChartGroupData(
+        x: slot,
+        barRods: [
+          BarChartRodData(
+            toY: totalInSlot.toDouble(),
+            color: Colors.deepPurple,
+            width: 4,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
+          )
+        ],
+      );
+    });
+
+    return _buildChartContainer(
+      title: 'Lượt mượn Real-time (10 phút/cột)',
+      chart: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: 144 * 12.0, 
+          child: BarChart(
+            BarChartData(
+              alignment: BarChartAlignment.spaceAround,
+              maxY: (maxVal == 0 ? 5 : maxVal.toDouble() + 1),
+              barTouchData: BarTouchData(
+                enabled: true,
+                touchCallback: (event, response) {
+                  if (event is FlTapUpEvent && response != null && response.spot != null) {
+                    int slotIndex = response.spot!.touchedBarGroupIndex;
+                    if (slotData.containsKey(slotIndex)) {
+                      _showSlotDetails(context, slotIndex, slotData[slotIndex]!, stations);
                     }
-
-                    // Chỉ hiển thị các trạm có hoạt động để biểu đồ không bị quá tải
-                    final displayStations = stations.where((s) => activeStationIds.contains(s.id)).toList();
-                    if (displayStations.isEmpty && stations.isNotEmpty) {
-                      // Nếu không có hoạt động nào, có thể hiển thị trạm đầu tiên hoặc để trống
-                    }
-
-                    int maxVal = 0;
-                    List<BarChartGroupData> barGroups = List.generate(24, (h) {
-                      List<BarChartRodData> rods = [];
-                      
-                      for (int i = 0; i < displayStations.length; i++) {
-                        int count = stationHourlyData[h]?[displayStations[i].id] ?? 0;
-                        if (count > maxVal) maxVal = count;
-                        
-                        rods.add(
-                          BarChartRodData(
-                            toY: count.toDouble(),
-                            color: _chartColors[stations.indexOf(displayStations[i]) % _chartColors.length],
-                            width: 6,
-                            borderRadius: const BorderRadius.only(
-                              topLeft: Radius.circular(3),
-                              topRight: Radius.circular(3),
-                            ),
-                          )
-                        );
-                      }
-
-                      return BarChartGroupData(
-                        x: h,
-                        barRods: rods,
-                        barsSpace: 2,
-                      );
-                    });
-
-                    return BarChart(
-                      BarChartData(
-                        alignment: BarChartAlignment.spaceAround,
-                        maxY: (maxVal == 0 ? 5 : maxVal.toDouble() + 2),
-                        barTouchData: BarTouchData(
-                          enabled: true,
-                          touchCallback: (FlTouchEvent event, barResponse) {
-                            if (!event.isInterestedForInteractions ||
-                                barResponse == null ||
-                                barResponse.spot == null) {
-                              return;
-                            }
-                            if (event is FlTapUpEvent) {
-                              final stationIndex = barResponse.spot!.touchedRodDataIndex;
-                              _showStationDetails(context, displayStations[stationIndex]);
-                            }
-                          },
-                          touchTooltipData: BarTouchTooltipData(
-                            getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                              String stationName = displayStations[rodIndex].name;
-                              return BarTooltipItem(
-                                '$stationName\n',
-                                const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                children: [
-                                  TextSpan(
-                                    text: '${rod.toY.toInt()} lượt',
-                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.normal),
-                                  ),
-                                ],
-                              );
-                            },
-                          ),
+                  }
+                },
+                touchTooltipData: BarTouchTooltipData(
+                  getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                    int hour = groupIndex ~/ 6;
+                    int min = (groupIndex % 6) * 10;
+                    return BarTooltipItem(
+                      '${hour.toString().padLeft(2,'0')}:${min.toString().padLeft(2,'0')}\n',
+                      const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      children: [
+                        TextSpan(
+                          text: '${rod.toY.toInt()} xe',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.normal),
                         ),
-                        titlesData: FlTitlesData(
-                          show: true,
-                          bottomTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              getTitlesWidget: (value, meta) {
-                                if (value % 4 == 0) {
-                                  return Text('${value.toInt()}h', style: const TextStyle(fontSize: 10, color: Colors.grey));
-                                }
-                                return const SizedBox();
-                              },
-                            ),
-                          ),
-                          leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        ),
-                        gridData: const FlGridData(show: false),
-                        borderData: FlBorderData(show: false),
-                        barGroups: barGroups,
-                      ),
+                      ],
                     );
                   },
                 ),
               ),
-              const SizedBox(height: 20),
-              StreamBuilder<QuerySnapshot>(
-                stream: _firestore.collection('trips')
-                    .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-                    .where('startTime', isLessThan: Timestamp.fromDate(endOfDay))
-                    .snapshots(),
-                builder: (context, tripSnapshot) {
-                  if (!tripSnapshot.hasData) return const SizedBox();
+              titlesData: FlTitlesData(
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 30,
+                    getTitlesWidget: (value, meta) {
+                      int val = value.toInt();
+                      if (val % 6 == 0) { // Hiện nhãn mỗi giờ
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text('${val ~/ 6}h', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                        );
+                      }
+                      return const SizedBox();
+                    },
+                  ),
+                ),
+                leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              gridData: const FlGridData(show: false),
+              borderData: FlBorderData(show: false),
+              barGroups: groups,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showSlotDetails(BuildContext context, int slotIndex, Map<String, int> stationCounts, List<Station> allStations) {
+    int hour = slotIndex ~/ 6;
+    int min = (slotIndex % 6) * 10;
+    String timeRange = '${hour.toString().padLeft(2, '0')}:${min.toString().padLeft(2, '0')} - ${hour.toString().padLeft(2, '0')}:${(min + 10).toString().padLeft(2, '0')}';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Chi tiết khung giờ $timeRange', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 20),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: stationCounts.length,
+                separatorBuilder: (context, index) => const Divider(),
+                itemBuilder: (context, index) {
+                  String sId = stationCounts.keys.elementAt(index);
+                  int count = stationCounts[sId]!;
+                  Station? station;
+                  try { station = allStations.firstWhere((s) => s.id == sId); } catch (_) {}
                   
-                  // Re-calculate active stations for the legend
-                  Set<String> activeIds = {};
-                  for (var doc in tripSnapshot.data!.docs) {
-                    final trip = doc.data() as Map<String, dynamic>;
-                    String stationId = trip['startStationId'] ?? "";
-                    String startLoc = trip['startLocation'] ?? "";
-                    if (stationId.isEmpty && startLoc.isNotEmpty) {
-                      try { stationId = stations.firstWhere((s) => s.name == startLoc).id; } catch (_) {}
-                    }
-                    if (stationId.isNotEmpty) activeIds.add(stationId);
-                  }
-                  final displayStations = stations.where((s) => activeIds.contains(s.id)).toList();
-                  
-                  return _buildLegend(displayStations, stations);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8.0),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(color: Colors.deepPurple.withOpacity(0.1), shape: BoxShape.circle),
+                          child: const Icon(Icons.ev_station, color: Colors.deepPurple, size: 20),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(station?.name ?? 'Trạm không xác định', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              Text('Đã mượn: $count xe', style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                        StreamBuilder<QuerySnapshot>(
+                          stream: _firestore.collection('bikes').where('stationId', isEqualTo: sId).where('status', isEqualTo: 'available').snapshots(),
+                          builder: (context, snapshot) {
+                            int available = snapshot.hasData ? snapshot.data!.docs.length : 0;
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text('$available', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.green)),
+                                const Text('Xe còn lại', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                              ],
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  );
                 },
               ),
-              const SizedBox(height: 10),
-            ],
-          ),
-        );
-      },
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Đóng', style: TextStyle(color: Colors.white)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChartContainer({required String title, required Widget chart, Widget? legend}) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15)],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 20),
+          SizedBox(height: 180, child: chart),
+          if (legend != null) ...[const SizedBox(height: 12), legend],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoDataChart(String title) {
+    return _buildChartContainer(
+      title: title,
+      chart: const Center(child: Text('Không có dữ liệu', style: TextStyle(color: Colors.grey))),
+    );
+  }
+
+  Widget _buildLegendItem(String label, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3))),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ],
     );
   }
 
@@ -614,7 +824,13 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                   ),
                 ],
               ),
-              Text('${NumberFormat('#,###').format(cost)}đ', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+              Text(
+                trip['status'] == 'Ongoing' ? 'Đang đi' : '${NumberFormat('#,###').format(cost)}đ', 
+                style: TextStyle(
+                  fontWeight: FontWeight.bold, 
+                  color: trip['status'] == 'Ongoing' ? Colors.blue : Colors.green
+                )
+              ),
             ],
           ),
           const Divider(height: 24),
@@ -649,15 +865,21 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   String _formatTripTime(Map<String, dynamic> trip) {
     Timestamp? startTimeTs = trip['startTime'] as Timestamp?;
     Timestamp? endTimeTs = trip['endTime'] as Timestamp?;
-    int duration = trip['duration'] ?? 0;
+    String status = trip['status'] ?? "";
 
     if (startTimeTs == null) return "---";
 
+    String startStr = DateFormat('HH:mm').format(startTimeTs.toDate());
+    
+    if (status == 'Ongoing') {
+      return "$startStr - Đang đi";
+    }
+
     if (endTimeTs != null) {
-      // Dữ liệu mới: startTime là bắt đầu, endTime là kết thúc
-      return "${DateFormat('HH:mm').format(startTimeTs.toDate())} - ${DateFormat('HH:mm').format(endTimeTs.toDate())}";
+      return "$startStr - ${DateFormat('HH:mm').format(endTimeTs.toDate())}";
     } else {
-      // Dữ liệu cũ: startTime lưu lúc kết thúc, duration là số phút
+      // Fallback cho dữ liệu cũ
+      int duration = trip['duration'] ?? 0;
       DateTime end = startTimeTs.toDate();
       DateTime start = end.subtract(Duration(minutes: duration));
       return "${DateFormat('HH:mm').format(start)} - ${DateFormat('HH:mm').format(end)}";

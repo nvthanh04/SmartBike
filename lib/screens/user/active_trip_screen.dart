@@ -20,8 +20,14 @@ import '../../widgets/station_marker_icon.dart';
 class ActiveTripScreen extends StatefulWidget {
   final String bikeId;
   final String startStationName;
+  final String tripId;
 
-  const ActiveTripScreen({super.key, required this.bikeId, required this.startStationName});
+  const ActiveTripScreen({
+    super.key, 
+    required this.bikeId, 
+    required this.startStationName,
+    required this.tripId,
+  });
 
   @override
   State<ActiveTripScreen> createState() => _ActiveTripScreenState();
@@ -869,20 +875,12 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               );
 
               try {
-                String tripId = FirebaseFirestore.instance.collection('trips').doc().id;
-
                 DateTime end = DateTime.now();
-                DateTime start = end.subtract(Duration(seconds: _secondsElapsed));
-
-                await FirebaseFirestore.instance.collection('trips').doc(tripId).set({
-                  'tripId': tripId,
-                  'userId': userId,
-                  'bikeId': widget.bikeId,
+                await FirebaseFirestore.instance.collection('trips').doc(widget.tripId).update({
                   'duration': (_secondsElapsed / 60).ceil(),
                   'cost': finalCost,
-                  'startLocation': widget.startStationName,
                   'endLocation': nearestStation.name,
-                  'startTime': Timestamp.fromDate(start),
+                  'endStationId': nearestStation.id,
                   'endTime': Timestamp.fromDate(end),
                   'status': 'Completed',
                 });
@@ -891,7 +889,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   'userId': userId,
                   'amount': finalCost,
                   'type': 'trip_payment',
-                  'relatedTripId': tripId,
+                  'relatedTripId': widget.tripId,
                   'method': _isMonthlyTicket ? 'Vé tháng' : 'Ví SmartBike',
                   'timestamp': FieldValue.serverTimestamp(),
                 });
