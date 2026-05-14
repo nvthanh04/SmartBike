@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "157457266727",
+    "project_id": "smartbike-5e0fe",
+    "storage_bucket": "smartbike-5e0fe.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:157457266727:android:ac79b8bce59e9cd043b602",
+        "android_client_info": {
+          "package_name": "com.example.smartbike"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDVZ1DYH3YxI-iZidOw1izlRcQYZSBjIzM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
