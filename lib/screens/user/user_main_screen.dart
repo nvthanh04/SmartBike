@@ -7,6 +7,8 @@ import '../map_screen.dart';
 import 'package:intl/intl.dart'; 
 import 'qr_scanner_screen.dart';
 import '../auth/login_screen.dart';
+import '../../providers/chatbot_provider.dart';
+import '../../widgets/chat_bubble_widget.dart';
 class UserMainScreen extends StatefulWidget {
   const UserMainScreen({super.key});
 
@@ -16,7 +18,8 @@ class UserMainScreen extends StatefulWidget {
 
 class _UserMainScreenState extends State<UserMainScreen> {
   int _selectedIndex = 0;
-  final Color primaryGreen = const Color(0xFF2ECC71); 
+  final Color primaryGreen = const Color(0xFF2ECC71);
+  final ChatbotProvider _chatbotProvider = ChatbotProvider();
 
   List<Widget> _buildPages() {
     return [
@@ -1433,7 +1436,13 @@ class _UserMainScreenState extends State<UserMainScreen> {
           ),
         ],
       ),
-      body: IndexedStack(index: _selectedIndex, children: _buildPages()),
+      body: Stack(
+        children: [
+          IndexedStack(index: _selectedIndex, children: _buildPages()),
+          // 💬 Bong bóng chatbot AI (draggable, voice + text)
+          ChatBubbleWidget(provider: _chatbotProvider),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _startQRScanFlow(context),
         backgroundColor: const Color(0xFFFF9800), 

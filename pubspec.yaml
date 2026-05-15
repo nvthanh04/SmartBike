@@ -48,6 +48,9 @@ dependencies:
   qr_flutter: ^4.1.0
   firebase_database: ^12.2.0
   fl_chart: ^1.2.0
+  google_generative_ai: 0.4.7
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.2.0
 
 dev_dependencies:
   flutter_test:

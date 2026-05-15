@@ -4,10 +4,13 @@ import '../../models/station_model.dart';
 import '../../models/bike_model.dart';
 import '../../services/station_service.dart';
 import '../../services/bike_service.dart';
+import '../../services/admin_notification_service.dart';
 import 'admin_map_picker_screen.dart';
 import 'package:latlong2/latlong.dart';
+
 class StationManagementScreen extends StatefulWidget {
-  const StationManagementScreen({super.key});
+  final String? initialFilter; // 'low', 'high', or null
+  const StationManagementScreen({super.key, this.initialFilter});
 
   @override
   State<StationManagementScreen> createState() =>
@@ -17,6 +20,45 @@ class StationManagementScreen extends StatefulWidget {
 class _StationManagementScreenState extends State<StationManagementScreen> {
   final StationService _stationService = StationService();
   final BikeService _bikeService = BikeService();
+  final AdminNotificationService _notifService = AdminNotificationService();
+  late String _selectedFilter; // 'all', 'low', 'high', 'normal'
+
+  // Cache số xe mỗi trạm
+  Map<String, int> _bikeCounts = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedFilter = widget.initialFilter ?? 'all';
+    _loadBikeCounts();
+  }
+
+  Future<void> _loadBikeCounts() async {
+    final bikeSnap = await FirebaseFirestore.instance.collection('bikes').get();
+    final counts = <String, int>{};
+    for (var doc in bikeSnap.docs) {
+      final sid = doc.data()['stationId'] ?? '';
+      if (sid.toString().isNotEmpty) {
+        counts[sid] = (counts[sid] ?? 0) + 1;
+      }
+    }
+    if (mounted) setState(() => _bikeCounts = counts);
+  }
+
+  List<Station> _filterStations(List<Station> stations) {
+    if (_selectedFilter == 'all') return stations;
+    return stations.where((s) {
+      final count = _bikeCounts[s.id] ?? 0;
+      if (_selectedFilter == 'low') {
+        return AdminNotificationService.isLowStation(count, s.capacity);
+      } else if (_selectedFilter == 'high') {
+        return AdminNotificationService.isHighStation(count, s.capacity);
+      } else {
+        return !AdminNotificationService.isLowStation(count, s.capacity) &&
+            !AdminNotificationService.isHighStation(count, s.capacity);
+      }
+    }).toList();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,36 +67,69 @@ class _StationManagementScreenState extends State<StationManagementScreen> {
         title: const Text('Quản lý Trạm xe'),
         backgroundColor: Colors.blueAccent,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.swap_horiz_rounded),
+            tooltip: 'Đề xuất điều phối',
+            onPressed: _showTransferSuggestions,
+          ),
+        ],
       ),
-      body: StreamBuilder<List<Station>>(
-        stream: _stationService.getStationsStream(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(child: Text('Lỗi: ${snapshot.error}'));
-          }
-          final stations = snapshot.data ?? [];
-          if (stations.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.location_off, size: 64, color: Colors.grey),
-                  SizedBox(height: 12),
-                  Text('Chưa có trạm nào', style: TextStyle(fontSize: 18, color: Colors.grey)),
-                  Text('Nhấn + để thêm trạm mới', style: TextStyle(color: Colors.grey)),
-                ],
-              ),
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: stations.length,
-            itemBuilder: (context, index) => _buildStationCard(stations[index]),
-          );
-        },
+      body: Column(
+        children: [
+          // Filter chips
+          _buildFilterChips(),
+          // Station list
+          Expanded(
+            child: StreamBuilder<List<Station>>(
+              stream: _stationService.getStationsStream(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text('Lỗi: ${snapshot.error}'));
+                }
+                final allStations = snapshot.data ?? [];
+                final stations = _filterStations(allStations);
+                if (allStations.isEmpty) {
+                  return const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.location_off, size: 64, color: Colors.grey),
+                        SizedBox(height: 12),
+                        Text('Chưa có trạm nào', style: TextStyle(fontSize: 18, color: Colors.grey)),
+                        Text('Nhấn + để thêm trạm mới', style: TextStyle(color: Colors.grey)),
+                      ],
+                    ),
+                  );
+                }
+                if (stations.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.filter_list_off, size: 48, color: Colors.grey[400]),
+                        const SizedBox(height: 8),
+                        Text('Không có trạm nào phù hợp bộ lọc',
+                            style: TextStyle(color: Colors.grey[500])),
+                      ],
+                    ),
+                  );
+                }
+                return RefreshIndicator(
+                  onRefresh: _loadBikeCounts,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: stations.length,
+                    itemBuilder: (context, index) => _buildStationCard(stations[index]),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showStationDialog(),
@@ -63,6 +138,167 @@ class _StationManagementScreenState extends State<StationManagementScreen> {
         backgroundColor: Colors.blueAccent,
         foregroundColor: Colors.white,
       ),
+    );
+  }
+
+  Widget _buildFilterChips() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      color: Colors.white,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _buildChip('all', 'Tất cả', Icons.list, Colors.blueAccent),
+            const SizedBox(width: 8),
+            _buildChip('low', '🔴 Thiếu xe', Icons.warning_amber, Colors.red),
+            const SizedBox(width: 8),
+            _buildChip('high', '🔵 Thừa xe', Icons.inventory_2, Colors.blue),
+            const SizedBox(width: 8),
+            _buildChip('normal', '🟢 Bình thường', Icons.check_circle, Colors.green),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChip(String value, String label, IconData icon, Color color) {
+    final selected = _selectedFilter == value;
+    return FilterChip(
+      selected: selected,
+      label: Text(label, style: TextStyle(
+        fontSize: 12,
+        fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+        color: selected ? Colors.white : color,
+      )),
+      avatar: selected ? null : Icon(icon, size: 16, color: color),
+      backgroundColor: Colors.grey[100],
+      selectedColor: color,
+      checkmarkColor: Colors.white,
+      onSelected: (_) => setState(() => _selectedFilter = value),
+    );
+  }
+
+
+  /// Hiển thị đề xuất điều phối xe
+  void _showTransferSuggestions() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    final suggestions = await _notifService.getTransferSuggestions();
+    if (!mounted) return;
+    Navigator.pop(context); // close loading
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.55,
+          maxChildSize: 0.85,
+          minChildSize: 0.3,
+          builder: (context, scrollCtrl) {
+            return Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(child: Container(width: 40, height: 4,
+                      decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)))),
+                  const SizedBox(height: 12),
+                  const Row(children: [
+                    Icon(Icons.swap_horiz_rounded, color: Colors.blueAccent, size: 24),
+                    SizedBox(width: 8),
+                    Text('Đề xuất điều phối xe', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  ]),
+                  const SizedBox(height: 4),
+                  Text('Tối ưu khoảng cách, cân bằng xe giữa các trạm',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                  const Divider(height: 20),
+                  if (suggestions.isEmpty)
+                    const Expanded(
+                      child: Center(
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.check_circle, size: 48, color: Colors.green),
+                          SizedBox(height: 8),
+                          Text('Các trạm đã cân bằng!', style: TextStyle(color: Colors.green, fontSize: 16)),
+                          Text('Không cần điều phối', style: TextStyle(color: Colors.grey)),
+                        ]),
+                      ),
+                    )
+                  else
+                    Expanded(
+                      child: ListView.builder(
+                        controller: scrollCtrl,
+                        itemCount: suggestions.length,
+                        itemBuilder: (context, i) {
+                          final s = suggestions[i];
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 10),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            elevation: 2,
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: Column(
+                                children: [
+                                  Row(children: [
+                                    Expanded(
+                                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        Text('📤 ${s.fromStation.name}',
+                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                        Text('${s.fromBikes}/${s.fromStation.capacity} xe',
+                                            style: TextStyle(fontSize: 11, color: Colors.blue[700])),
+                                      ]),
+                                    ),
+                                    Column(children: [
+                                      const Icon(Icons.arrow_forward, color: Colors.orange, size: 20),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange[50],
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(color: Colors.orange),
+                                        ),
+                                        child: Text('${s.transferCount} xe',
+                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.orange)),
+                                      ),
+                                    ]),
+                                    Expanded(
+                                      child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                                        Text('📥 ${s.toStation.name}',
+                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                        Text('${s.toBikes}/${s.toStation.capacity} xe',
+                                            style: TextStyle(fontSize: 11, color: Colors.red[700])),
+                                      ]),
+                                    ),
+                                  ]),
+                                  const SizedBox(height: 6),
+                                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                    Icon(Icons.route, size: 14, color: Colors.grey[500]),
+                                    const SizedBox(width: 4),
+                                    Text('${s.distanceKm} km',
+                                        style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                                  ]),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -189,6 +425,7 @@ class _StationManagementScreenState extends State<StationManagementScreen> {
       ),
     );
   }
+
 
   void _showStationDialog({Station? station}) {
     final isEdit = station != null;

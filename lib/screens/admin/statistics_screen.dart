@@ -13,10 +13,23 @@ class StatisticsScreen extends StatefulWidget {
 
 class _StatisticsScreenState extends State<StatisticsScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  DateTime _selectedDate = DateTime.now();
+  DateTime _startDate = DateTime.now();
+  DateTime _endDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    // Khởi tạo mặc định là ngày hôm nay
+    _startDate = DateTime(_startDate.year, _startDate.month, _startDate.day);
+    _endDate = _startDate;
+  }
 
   @override
   Widget build(BuildContext context) {
+    String dateRangeStr = _startDate == _endDate 
+      ? DateFormat('dd/MM/yyyy').format(_startDate)
+      : '${DateFormat('dd/MM').format(_startDate)} - ${DateFormat('dd/MM/yyyy').format(_endDate)}';
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
@@ -24,20 +37,38 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.calendar_today),
+          TextButton.icon(
+            icon: const Icon(Icons.date_range, color: Colors.white),
+            label: Text(dateRangeStr, style: const TextStyle(color: Colors.white, fontSize: 12)),
             onPressed: () async {
-              final picked = await showDatePicker(
+              final picked = await showDateRangePicker(
                 context: context,
-                initialDate: _selectedDate,
+                initialDateRange: DateTimeRange(start: _startDate, end: _endDate),
                 firstDate: DateTime(2023),
                 lastDate: DateTime.now(),
+                builder: (context, child) {
+                  return Theme(
+                    data: Theme.of(context).copyWith(
+                      colorScheme: const ColorScheme.light(
+                        primary: Colors.deepPurple,
+                        onPrimary: Colors.white,
+                        surface: Colors.white,
+                        onSurface: Colors.black,
+                      ),
+                    ),
+                    child: child!,
+                  );
+                },
               );
               if (picked != null) {
-                setState(() => _selectedDate = picked);
+                setState(() {
+                  _startDate = picked.start;
+                  _endDate = picked.end;
+                });
               }
             },
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: SingleChildScrollView(
@@ -74,10 +105,10 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           const SizedBox(width: 16),
           Expanded(
             child: _buildStatCard(
-              title: 'Chuyến đi hôm nay',
+              title: 'Chuyến đi',
               stream: _firestore.collection('trips')
-                  .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day)))
-                  .where('startTime', isLessThan: Timestamp.fromDate(DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day).add(const Duration(days: 1))))
+                  .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(_startDate))
+                  .where('startTime', isLessThan: Timestamp.fromDate(_endDate.add(const Duration(days: 1))))
                   .snapshots(),
               color: Colors.orange,
               icon: Icons.trending_up,
@@ -133,8 +164,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   ];
 
   Widget _buildChartsSection() {
-    DateTime startOfDay = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
-    DateTime endOfDay = startOfDay.add(const Duration(days: 1));
+    DateTime startRange = DateTime(_startDate.year, _startDate.month, _startDate.day);
+    DateTime endRange = DateTime(_endDate.year, _endDate.month, _endDate.day).add(const Duration(days: 1));
 
     return StreamBuilder<QuerySnapshot>(
       stream: _firestore.collection('stations').snapshots(),
@@ -147,8 +178,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
 
         return StreamBuilder<QuerySnapshot>(
           stream: _firestore.collection('trips')
-              .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-              .where('startTime', isLessThan: Timestamp.fromDate(endOfDay))
+              .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startRange))
+              .where('startTime', isLessThan: Timestamp.fromDate(endRange))
               .snapshots(),
           builder: (context, tripSnapshot) {
             if (!tripSnapshot.hasData) return const Center(child: CircularProgressIndicator());
@@ -157,6 +188,10 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
             
             return Column(
               children: [
+                _buildRevenueChart(trips),
+                const SizedBox(height: 24),
+                _buildTopStations(allStations, trips),
+                const SizedBox(height: 24),
                 _buildBorrowReturnChart(allStations, trips),
                 const SizedBox(height: 24),
                 _buildTenMinuteActivityChart(allStations, trips),
@@ -165,6 +200,245 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           },
         );
       },
+    );
+  }
+
+  Widget _buildTopStations(List<Station> allStations, List<QueryDocumentSnapshot> trips) {
+    Map<String, int> stationUsage = {};
+    for (var doc in trips) {
+      final data = doc.data() as Map<String, dynamic>;
+      String startId = data['startStationId'] ?? '';
+      String endId = data['endStationId'] ?? '';
+      if (startId.isNotEmpty) stationUsage[startId] = (stationUsage[startId] ?? 0) + 1;
+      if (endId.isNotEmpty) stationUsage[endId] = (stationUsage[endId] ?? 0) + 1;
+    }
+
+    List<MapEntry<String, int>> sorted = stationUsage.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    
+    final top5 = sorted.take(5).toList();
+
+    return _buildChartContainer(
+      title: 'Top 5 Trạm phổ biến nhất',
+      chart: top5.isEmpty 
+        ? const Center(child: Text('Không có dữ liệu trạm', style: TextStyle(color: Colors.grey)))
+        : ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: top5.length,
+            itemBuilder: (context, index) {
+              final entry = top5[index];
+              final station = allStations.firstWhere((s) => s.id == entry.key, 
+                  orElse: () => Station(id: entry.key, name: 'Trạm ẩn danh', latitude: 0, longitude: 0, capacity: 0, currentBikes: 0));
+              
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: _chartColors[index % _chartColors.length].withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text('${index + 1}', style: TextStyle(color: _chartColors[index % _chartColors.length], fontWeight: FontWeight.bold, fontSize: 12)),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(station.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                          const SizedBox(height: 4),
+                          LinearProgressIndicator(
+                            value: entry.value / (top5[0].value),
+                            backgroundColor: Colors.grey[200],
+                            valueColor: AlwaysStoppedAnimation<Color>(_chartColors[index % _chartColors.length]),
+                            minHeight: 6,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text('${entry.value} lượt', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                  ],
+                ),
+              );
+            },
+          ),
+    );
+  }
+
+  Widget _buildRevenueChart(List<QueryDocumentSnapshot> trips) {
+    final formatter = NumberFormat.currency(locale: 'vi_VN', symbol: 'đ');
+    Map<int, int> hourlyRevenue = {};
+    int totalRevenue = 0;
+
+    for (var doc in trips) {
+      final data = doc.data() as Map<String, dynamic>;
+      if (data['status'] == 'Completed') {
+        Timestamp? ts = data['endTime'] as Timestamp?;
+        if (ts != null) {
+          int hour = ts.toDate().hour;
+          int cost = data['cost'] ?? 0;
+          hourlyRevenue[hour] = (hourlyRevenue[hour] ?? 0) + cost;
+          totalRevenue += cost;
+        }
+      }
+    }
+
+    if (totalRevenue == 0) return _buildNoDataChart('Doanh thu');
+
+    bool isMultiDay = _startDate != _endDate;
+
+    if (isMultiDay) {
+      // Nhóm theo ngày
+      Map<String, int> dailyRevenue = {};
+      for (var doc in trips) {
+        final data = doc.data() as Map<String, dynamic>;
+        if (data['status'] == 'Completed') {
+          Timestamp? ts = data['endTime'] as Timestamp?;
+          if (ts != null) {
+            String day = DateFormat('dd/MM').format(ts.toDate());
+            dailyRevenue[day] = (dailyRevenue[day] ?? 0) + (data['cost'] as int? ?? 0);
+          }
+        }
+      }
+
+      List<String> sortedDays = dailyRevenue.keys.toList()..sort((a, b) {
+        // Sort dd/MM format (rough sort for display)
+        return a.compareTo(b);
+      });
+
+      List<BarChartGroupData> groups = List.generate(sortedDays.length, (i) {
+        double rev = dailyRevenue[sortedDays[i]]!.toDouble();
+        return BarChartGroupData(
+          x: i,
+          barRods: [
+            BarChartRodData(
+              toY: rev,
+              color: Colors.green,
+              width: 16,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+            )
+          ],
+        );
+      });
+
+      return _buildChartContainer(
+        title: 'Doanh thu theo ngày (Tổng: ${formatter.format(totalRevenue)})',
+        chart: BarChart(
+          BarChartData(
+            alignment: BarChartAlignment.spaceAround,
+            maxY: dailyRevenue.values.reduce((a, b) => a > b ? a : b).toDouble() * 1.2,
+            titlesData: FlTitlesData(
+              bottomTitles: AxisTitles(
+                sideTitles: SideTitles(
+                  showTitles: true,
+                  getTitlesWidget: (value, meta) {
+                    int idx = value.toInt();
+                    if (idx >= 0 && idx < sortedDays.length) {
+                      return Text(sortedDays[idx], style: const TextStyle(fontSize: 10));
+                    }
+                    return const SizedBox();
+                  },
+                ),
+              ),
+              leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            ),
+            gridData: const FlGridData(show: false),
+            borderData: FlBorderData(show: false),
+            barGroups: groups,
+          ),
+        ),
+      );
+    }
+
+    // Nếu chỉ chọn 1 ngày, show theo giờ như cũ
+    List<BarChartGroupData> groups = List.generate(24, (hour) {
+      double rev = (hourlyRevenue[hour] ?? 0).toDouble();
+      return BarChartGroupData(
+        x: hour,
+        barRods: [
+          BarChartRodData(
+            toY: rev,
+            gradient: const LinearGradient(
+              colors: [Color(0xFF00B4DB), Color(0xFF0083B0)],
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+            ),
+            width: 10,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          )
+        ],
+      );
+    });
+
+
+
+    return _buildChartContainer(
+      title: 'Doanh thu theo giờ (Tổng: ${formatter.format(totalRevenue)})',
+      chart: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: (hourlyRevenue.values.isEmpty ? 50000 : hourlyRevenue.values.reduce((a, b) => a > b ? a : b).toDouble() * 1.2),
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (group) => Colors.blueGrey.shade900,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                return BarTooltipItem(
+                  'Khung giờ ${groupIndex}h\n',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  children: [
+                    TextSpan(
+                      text: formatter.format(rod.toY.toInt()),
+                      style: const TextStyle(color: Colors.cyanAccent),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  if (value % 4 == 0) {
+                    return Text('${value.toInt()}h', style: const TextStyle(fontSize: 10, color: Colors.grey));
+                  }
+                  return const SizedBox();
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value == 0) return const SizedBox();
+                  return Text('${(value / 1000).toInt()}k', style: const TextStyle(fontSize: 10, color: Colors.grey));
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: FlGridData(
+            show: true,
+            horizontalInterval: 10000,
+            getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.1), strokeWidth: 1),
+            drawVerticalLine: false,
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: groups,
+        ),
+      ),
     );
   }
 
@@ -212,8 +486,28 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       groups.add(BarChartGroupData(
         x: i,
         barRods: [
-          BarChartRodData(toY: bCount.toDouble(), color: Colors.blue, width: 8, borderRadius: BorderRadius.circular(4)),
-          BarChartRodData(toY: rCount.toDouble(), color: Colors.orange, width: 8, borderRadius: BorderRadius.circular(4)),
+          BarChartRodData(
+            toY: bCount.toDouble(), 
+            gradient: const LinearGradient(colors: [Colors.lightBlueAccent, Colors.blue]),
+            width: 12, 
+            borderRadius: BorderRadius.circular(6),
+            backDrawRodData: BackgroundBarChartRodData(
+              show: true,
+              toY: (maxVal == 0 ? 5 : maxVal.toDouble() + 1),
+              color: Colors.grey.withOpacity(0.1),
+            )
+          ),
+          BarChartRodData(
+            toY: rCount.toDouble(), 
+            gradient: const LinearGradient(colors: [Colors.orangeAccent, Colors.deepOrange]),
+            width: 12, 
+            borderRadius: BorderRadius.circular(6),
+            backDrawRodData: BackgroundBarChartRodData(
+              show: true,
+              toY: (maxVal == 0 ? 5 : maxVal.toDouble() + 1),
+              color: Colors.grey.withOpacity(0.1),
+            )
+          ),
         ],
         barsSpace: 4,
       ));
@@ -227,14 +521,19 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           maxY: (maxVal == 0 ? 5 : maxVal.toDouble() + 1),
           barTouchData: BarTouchData(
             touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (group) => Colors.blueGrey.shade900,
+              tooltipPadding: const EdgeInsets.all(12),
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
                 return BarTooltipItem(
                   '${displayStations[groupIndex].name}\n',
-                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                   children: [
                     TextSpan(
-                      text: rodIndex == 0 ? 'Mượn: ${rod.toY.toInt()}' : 'Trả: ${rod.toY.toInt()}',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.normal),
+                      text: rodIndex == 0 ? 'Mượn: ${rod.toY.toInt()} xe' : 'Trả: ${rod.toY.toInt()} xe',
+                      style: TextStyle(
+                        color: rodIndex == 0 ? Colors.lightBlueAccent : Colors.orangeAccent,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 );
@@ -249,16 +548,30 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                   if (value.toInt() < 0 || value.toInt() >= displayStations.length) return const SizedBox();
                   return Padding(
                     padding: const EdgeInsets.only(top: 8.0),
-                    child: Text('${value.toInt() + 1}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                    child: Text('${value.toInt() + 1}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
                   );
                 },
               ),
             ),
-            leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 30,
+                getTitlesWidget: (value, meta) {
+                  if (value == 0 || value == meta.max) return const SizedBox();
+                  return Text(value.toInt().toString(), style: TextStyle(color: Colors.grey.shade600, fontSize: 10));
+                },
+              ),
+            ),
             topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
             rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           ),
-          gridData: const FlGridData(show: false),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: 1,
+            getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1, dashArray: [4, 4]),
+          ),
           borderData: FlBorderData(show: false),
           barGroups: groups,
         ),
@@ -335,9 +648,13 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         barRods: [
           BarChartRodData(
             toY: totalInSlot.toDouble(),
-            color: Colors.deepPurple,
-            width: 4,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
+            gradient: const LinearGradient(
+              colors: [Colors.purpleAccent, Colors.deepPurple],
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+            ),
+            width: 6,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
           )
         ],
       );
@@ -348,7 +665,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       chart: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: SizedBox(
-          width: 144 * 12.0, 
+          width: 144 * 14.0, 
           child: BarChart(
             BarChartData(
               alignment: BarChartAlignment.spaceAround,
@@ -364,16 +681,17 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                   }
                 },
                 touchTooltipData: BarTouchTooltipData(
+                  getTooltipColor: (group) => Colors.deepPurple.shade900,
                   getTooltipItem: (group, groupIndex, rod, rodIndex) {
                     int hour = groupIndex ~/ 6;
                     int min = (groupIndex % 6) * 10;
                     return BarTooltipItem(
                       '${hour.toString().padLeft(2,'0')}:${min.toString().padLeft(2,'0')}\n',
-                      const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                       children: [
                         TextSpan(
-                          text: '${rod.toY.toInt()} xe',
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.normal),
+                          text: '${rod.toY.toInt()} lượt mượn',
+                          style: const TextStyle(color: Colors.yellowAccent, fontWeight: FontWeight.w500),
                         ),
                       ],
                     );
@@ -390,7 +708,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                       if (val % 6 == 0) { // Hiện nhãn mỗi giờ
                         return Padding(
                           padding: const EdgeInsets.only(top: 8.0),
-                          child: Text('${val ~/ 6}h', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                          child: Text('${val ~/ 6}h', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
                         );
                       }
                       return const SizedBox();
@@ -401,7 +719,12 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                 topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                 rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
               ),
-              gridData: const FlGridData(show: false),
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+                horizontalInterval: 1,
+                getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.15), strokeWidth: 1, dashArray: [3, 3]),
+              ),
               borderData: FlBorderData(show: false),
               barGroups: groups,
             ),
@@ -564,20 +887,21 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   }
 
   Widget _buildTripHistoryList() {
-    DateTime startOfDay = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
-    DateTime endOfDay = startOfDay.add(const Duration(days: 1));
+    DateTime startRange = DateTime(_startDate.year, _startDate.month, _startDate.day);
+    DateTime endRange = DateTime(_endDate.year, _endDate.month, _endDate.day).add(const Duration(days: 1));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Padding(
-          padding: EdgeInsets.fromLTRB(20, 30, 20, 15),
-          child: Text('Chi tiết lịch sử di chuyển', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          padding: EdgeInsets.fromLTRB(16, 24, 16, 8),
+          child: Text('Lịch sử chuyến đi trong kỳ', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         ),
         StreamBuilder<QuerySnapshot>(
           stream: _firestore.collection('trips')
-              .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-              .where('startTime', isLessThan: Timestamp.fromDate(endOfDay))
+              .where('startTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startRange))
+              .where('startTime', isLessThan: Timestamp.fromDate(endRange))
+              .orderBy('startTime', descending: true)
               .snapshots(),
           builder: (context, snapshot) {
             if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
